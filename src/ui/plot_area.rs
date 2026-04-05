@@ -11,8 +11,8 @@ pub struct PlotArea {
 
 impl PlotArea {
     /// Add a new map plot (called by app after the dialog completes).
-    pub fn add_map_plot(&mut self, config: MapPlotConfig, state: &AppState) {
-        self.plot_manager.add_map_plot(config, state);
+    pub fn add_map_plot(&mut self, config: MapPlotConfig, state: &AppState, central_rect: egui::Rect) {
+        self.plot_manager.add_map_plot(config, state, central_rect);
     }
 
     /// Remove a plot by ID (called when user clicks Remove in the left pane).
@@ -30,10 +30,10 @@ impl PlotArea {
         self.plot_manager.plot_ids_and_titles()
     }
 
-    /// Draw floating plot windows. Must be called BEFORE panels so windows can overlay them.
+    /// Draw floating plot windows constrained to the central panel rect.
     /// Returns IDs of plots the user closed via the window X button.
-    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme) -> Vec<usize> {
-        self.plot_manager.show_windows(ctx, theme)
+    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme, central_rect: egui::Rect) -> Vec<usize> {
+        self.plot_manager.show_windows(ctx, theme, central_rect)
     }
 
     /// Draw the central panel background / empty state hint.

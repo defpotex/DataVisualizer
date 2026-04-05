@@ -1,7 +1,7 @@
 use crate::data::source::DataSource;
 use crate::plot::plot_config::{MapPlotConfig, TileScheme};
 use crate::theme::AppTheme;
-use egui::{Color32, Context, Pos2, RichText, Ui};
+use egui::{Color32, Context, Pos2, Rect, RichText, Ui, vec2};
 use polars::prelude::DataType;
 use walkers::sources::{Attribution, OpenStreetMap, TileSource};
 use walkers::{HttpTiles, Map, MapMemory, Position, Projector, Tiles};
@@ -30,28 +30,29 @@ impl TileSource for CartoDark {
 
 // ── MapPlot ───────────────────────────────────────────────────────────────────
 
-/// Runtime state for a single geographic map plot.
 pub struct MapPlot {
     pub config: MapPlotConfig,
-    /// Drives the egui::Window open state (false = user clicked X).
+    /// Drives the egui::Window open flag.
     is_open: bool,
+    /// Starting position computed on creation; egui remembers user moves after first show.
+    default_pos: Pos2,
     tiles: Option<HttpTiles>,
     map_memory: MapMemory,
     points: Vec<[f64; 2]>,
 }
 
 impl MapPlot {
-    pub fn new(config: MapPlotConfig) -> Self {
+    pub fn new(config: MapPlotConfig, default_pos: Pos2) -> Self {
         Self {
             config,
             is_open: true,
+            default_pos,
             tiles: None,
             map_memory: MapMemory::default(),
             points: Vec::new(),
         }
     }
 
-    /// Extract lat/lon from the source and cache them. Call once after load.
     pub fn sync_data(&mut self, source: &DataSource) {
         self.points = extract_lat_lon(&source.df, &self.config.lat_col, &self.config.lon_col);
     }
@@ -60,9 +61,9 @@ impl MapPlot {
         self.config.id
     }
 
-    /// Show this plot as a floating, resizable, draggable egui Window.
-    /// Returns `false` if the user closed the window (caller should remove this plot).
-    pub fn show_as_window(&mut self, ctx: &Context, theme: &AppTheme) -> bool {
+    /// Render as a floating egui Window constrained to `central_rect`.
+    /// Returns `false` if the user closed the window.
+    pub fn show_as_window(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect) -> bool {
         if !self.is_open {
             return false;
         }
@@ -71,7 +72,6 @@ impl MapPlot {
         let s = &theme.spacing;
         let id = self.config.id;
 
-        // Style the window frame to match our dark theme.
         let window_frame = egui::Frame {
             fill: c.bg_panel,
             stroke: egui::Stroke::new(1.0, c.accent_primary),
@@ -80,90 +80,107 @@ impl MapPlot {
             ..Default::default()
         };
 
-        // Extract `is_open` before the closure to avoid self-borrow conflict with `.open()`.
+        // Default size: half the central panel in each dimension.
+        let default_w = (central_rect.width() * 0.5 - 12.0).max(320.0);
+        let default_h = (central_rect.height() * 0.5 - 12.0).max(200.0);
+
         let mut is_open = self.is_open;
 
-        egui::Window::new(RichText::new(&self.config.title).color(c.text_primary).size(s.font_body).strong())
-            .id(egui::Id::new(("map_plot", id)))
-            .open(&mut is_open)
-            .resizable(true)
-            .default_size([700.0, 500.0])
-            .min_size([320.0, 200.0])
-            .frame(window_frame)
-            .show(ctx, |ui| {
-                self.show_toolbar(ui, theme);
+        egui::Window::new(
+            RichText::new(&self.config.title)
+                .color(c.text_primary)
+                .size(s.font_body)
+                .strong(),
+        )
+        .id(egui::Id::new(("map_plot_win", id)))
+        .open(&mut is_open)
+        .resizable(true)
+        .collapsible(true)
+        .default_pos(self.default_pos)
+        .default_size([default_w, default_h])
+        .min_size([320.0, 200.0])
+        .constrain_to(central_rect)
+        .frame(window_frame)
+        .show(ctx, |ui| {
+            // Push a unique ID scope so all inner widget IDs are namespaced per plot,
+            // preventing clashes when multiple windows share the same inner structure.
+            ui.push_id(id, |ui| {
+                show_toolbar(ui, &self.config, self.points.len(), theme);
                 ui.separator();
-                self.show_map(ui, theme);
+                show_map(ui, &mut self.tiles, &mut self.map_memory, &self.config, &self.points, theme);
             });
+        });
 
         self.is_open = is_open;
         self.is_open
     }
-
-    /// Thin toolbar row: icon, tile scheme label, point count.
-    fn show_toolbar(&mut self, ui: &mut Ui, theme: &AppTheme) {
-        let c = &theme.colors;
-        let s = &theme.spacing;
-
-        egui::Frame::default()
-            .fill(c.bg_app)
-            .inner_margin(egui::Margin::from(egui::vec2(8.0, 4.0)))
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("◈").color(c.accent_primary).size(s.font_small));
-                    ui.label(
-                        RichText::new("Map")
-                            .color(c.text_secondary)
-                            .size(s.font_small),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(self.config.tile_scheme.label())
-                            .color(c.text_secondary)
-                            .size(s.font_small),
-                    );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!("{} pts", format_count(self.points.len())))
-                            .color(c.accent_secondary)
-                            .size(s.font_small),
-                    );
-
-                    // Right-aligned: lat/lon column labels
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("lon: {}  lat: {}", self.config.lon_col, self.config.lat_col))
-                                .color(c.text_secondary)
-                                .size(s.font_small)
-                                .monospace(),
-                        );
-                    });
-                });
-            });
-    }
-
-    /// The actual map widget — fills remaining space in the window.
-    fn show_map(&mut self, ui: &mut Ui, theme: &AppTheme) {
-        // Lazy-init tiles on first render.
-        if self.tiles.is_none() {
-            self.tiles = Some(make_tiles(&self.config.tile_scheme, ui.ctx().clone()));
-        }
-
-        let center = compute_center(&self.points);
-        let points = self.points.clone();
-        let accent = theme.colors.accent_primary;
-
-        let tiles: &mut dyn Tiles = self.tiles.as_mut().unwrap();
-
-        ui.add(
-            Map::new(Some(tiles), &mut self.map_memory, center)
-                .with_plugin(PointsPlugin { points, color: accent }),
-        );
-    }
 }
 
-// ── Plugin: draw data points ──────────────────────────────────────────────────
+// ── Toolbar ───────────────────────────────────────────────────────────────────
+
+fn show_toolbar(ui: &mut Ui, config: &MapPlotConfig, point_count: usize, theme: &AppTheme) {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+
+    egui::Frame::default()
+        .fill(c.bg_app)
+        .inner_margin(egui::Margin::from(vec2(8.0, 4.0)))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("◈").color(c.accent_primary).size(s.font_small));
+                ui.label(RichText::new("Map").color(c.text_secondary).size(s.font_small));
+                ui.separator();
+                ui.label(
+                    RichText::new(config.tile_scheme.label())
+                        .color(c.text_secondary)
+                        .size(s.font_small),
+                );
+                ui.separator();
+                ui.label(
+                    RichText::new(format!("{} pts", format_count(point_count)))
+                        .color(c.accent_secondary)
+                        .size(s.font_small),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("lon: {}  lat: {}", config.lon_col, config.lat_col))
+                            .color(c.text_secondary)
+                            .size(s.font_small)
+                            .monospace(),
+                    );
+                });
+            });
+        });
+}
+
+// ── Map widget ────────────────────────────────────────────────────────────────
+
+fn show_map(
+    ui: &mut Ui,
+    tiles: &mut Option<HttpTiles>,
+    map_memory: &mut MapMemory,
+    config: &MapPlotConfig,
+    points: &[[f64; 2]],
+    theme: &AppTheme,
+) {
+    if tiles.is_none() {
+        *tiles = Some(make_tiles(&config.tile_scheme, ui.ctx().clone()));
+    }
+
+    let center = compute_center(points);
+    let accent = theme.colors.accent_primary;
+    let pts: Vec<[f64; 2]> = points.to_vec();
+
+    let tile_ref: &mut dyn Tiles = tiles.as_mut().unwrap();
+
+    ui.add(
+        Map::new(Some(tile_ref), map_memory, center)
+            .with_plugin(PointsPlugin { points: pts, color: accent }),
+    );
+}
+
+// ── Plugin: draw data points clipped to the map rect ─────────────────────────
 
 struct PointsPlugin {
     points: Vec<[f64; 2]>,
@@ -174,14 +191,14 @@ impl walkers::Plugin for PointsPlugin {
     fn run(
         self: Box<Self>,
         ui: &mut Ui,
-        _response: &egui::Response,
+        response: &egui::Response,
         projector: &Projector,
         _map_memory: &MapMemory,
     ) {
-        let painter = ui.painter();
+        // Clip to the map widget's rect so points don't bleed into the toolbar.
+        let painter = ui.painter().with_clip_rect(response.rect);
         for [lat, lon] in &self.points {
             let pos = walkers::lat_lon(*lat, *lon);
-            // project() returns absolute screen Vec2 (includes clip_rect.center offset).
             let v = projector.project(pos);
             painter.circle_filled(Pos2::new(v.x, v.y), 3.0, self.color);
         }
@@ -199,7 +216,7 @@ fn make_tiles(scheme: &TileScheme, ctx: egui::Context) -> HttpTiles {
 
 fn compute_center(points: &[[f64; 2]]) -> Position {
     if points.is_empty() {
-        return walkers::lat_lon(39.5, -98.35); // Geographic center of USA
+        return walkers::lat_lon(39.5, -98.35);
     }
     let lat = points.iter().map(|p| p[0]).sum::<f64>() / points.len() as f64;
     let lon = points.iter().map(|p| p[1]).sum::<f64>() / points.len() as f64;

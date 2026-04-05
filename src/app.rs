@@ -37,6 +37,9 @@ pub struct DataVisualizerApp {
     menu_bar: MenuBar,
     left_pane: LeftPane,
     plot_area: PlotArea,
+
+    /// Central panel rect from the previous frame — used to constrain plot windows.
+    central_rect: egui::Rect,
 }
 
 impl DataVisualizerApp {
@@ -60,6 +63,11 @@ impl DataVisualizerApp {
             menu_bar: MenuBar::default(),
             left_pane: LeftPane::default(),
             plot_area: PlotArea::default(),
+            // Sensible default; overwritten after first frame's CentralPanel is shown.
+            central_rect: egui::Rect::from_min_size(
+                egui::pos2(260.0, 28.0),
+                egui::vec2(1100.0, 860.0),
+            ),
             theme,
         }
     }
@@ -114,12 +122,6 @@ impl eframe::App for DataVisualizerApp {
         // Clone theme so closures can borrow self mutably without conflict.
         let theme = self.theme.clone();
 
-        // ── Floating plot windows (before panels so they can overlay the central area) ──
-        let closed_plots = self.plot_area.show_windows(ctx, &theme);
-        for id in closed_plots {
-            self.app_state.plots.retain(|p| p.id() != id);
-        }
-
         // Collect actions from panels — handle after all panels are drawn.
         let mut menu_action: Option<MenuAction> = None;
         let mut pane_action: Option<PaneAction> = None;
@@ -143,12 +145,21 @@ impl eframe::App for DataVisualizerApp {
                 pane_action = self.left_pane.show(ui, &theme, &self.app_state);
             });
 
-        // ── Plot area ─────────────────────────────────────────────────────────
-        egui::CentralPanel::default()
+        // ── Plot area (central panel) ─────────────────────────────────────────
+        // Capture the central rect so floating windows can be constrained to it.
+        let central_response = egui::CentralPanel::default()
             .frame(plot_area_frame(&theme))
             .show(ctx, |ui| {
                 self.plot_area.show(ui, &theme, &self.app_state);
             });
+        self.central_rect = central_response.response.rect;
+
+        // ── Floating plot windows (drawn after panels so constrain_to works) ──
+        // Windows float above panel contents but are bounded to the central rect.
+        let closed_plots = self.plot_area.show_windows(ctx, &theme, self.central_rect);
+        for id in closed_plots {
+            self.app_state.plots.retain(|p| p.id() != id);
+        }
 
         // Handle actions after all panels are drawn (avoids borrow conflicts)
         if let Some(a) = menu_action { self.handle_menu_action(a); }
@@ -201,7 +212,7 @@ impl DataVisualizerApp {
                 config.id = self.app_state.alloc_plot_id();
                 let plot_config = crate::plot::plot_config::PlotConfig::Map(config.clone());
                 self.app_state.plots.push(plot_config);
-                self.plot_area.add_map_plot(config, &self.app_state);
+                self.plot_area.add_map_plot(config, &self.app_state, self.central_rect);
             }
             PaneAction::RemovePlot(id) => {
                 self.plot_area.remove_plot(id);
