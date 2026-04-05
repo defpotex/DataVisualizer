@@ -223,25 +223,20 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 
 ---
 
-### Phase 3 — Test Data: UDP Replay Streamer ⬜
-*Goal: A tool to replay any CSV over UDP — used to test Phase 9 (UDP ingestion) and Phase 10 (live streaming UI).*
+### Phase 3 — Test Data: UDP Replay Streamer ✅
+*Goal: A tool to replay any CSV over UDP — used to test Phase 10 (UDP ingestion) and Phase 11 (live streaming UI).*
 
 > **Workspace location:** `tools/udp_streamer/` — standalone binary, not part of the main app.
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F0.2.1 | Read any CSV file | ⬜ | Path via CLI arg |
-| F0.2.2 | Replay rows over UDP | ⬜ | Newline-delimited CSV strings, respects timestamp ordering |
-| F0.2.3 | CLI config: host:port, speed, loop | ⬜ | e.g. `--target 127.0.0.1:5005 --speed 10 --loop` |
-| F0.2.4 | Stdout progress stats | ⬜ | Rows/sec, elapsed, current sim timestamp |
-| F0.2.5 | Graceful Ctrl+C shutdown | ⬜ | Flush + exit cleanly |
+| F0.2.1 | Read any CSV file | ✅ | `--file`, loads via polars, sorts by timestamp |
+| F0.2.2 | Replay rows over UDP | ✅ | Newline-delimited CSV strings, timestamp-ordered delivery |
+| F0.2.3 | CLI config: host:port, speed, loop | ✅ | `--target`, `--speed`, `--loop`, `--header` |
+| F0.2.4 | Stdout progress stats | ✅ | Rows/sec, elapsed, sim timestamp every 1000 rows |
+| F0.2.5 | Graceful Ctrl+C shutdown | ✅ | Atomic flag, 50ms sleep chunks, summary on exit |
 
-**Usage example:**
-```
-cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 127.0.0.1:5005 --speed 20 --loop
-```
-
-**Exit criteria:** Running the streamer sends UDP packets readable by `nc -ul 5005`; rows arrive in timestamp order at the configured speed multiplier.
+**Exit criteria:** Running the streamer sends UDP packets readable by `nc -ul 5005`; rows arrive in timestamp order at the configured speed multiplier. ✅
 
 ---
 
@@ -415,3 +410,4 @@ cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 127.0.0.1:
 | 2026-04-04 | F0 | Added test data infrastructure phases: ADS-B CSV generator (Phase 2) and UDP replay streamer (Phase 3); existing phases renumbered 4–14 |
 | 2026-04-04 | Phase 1 | Foundation complete: workspace scaffold, eframe window, 3-panel layout, Engineering Dark theme, persistent window geometry |
 | 2026-04-04 | Phase 2 | ADS-B CSV generator complete: OpenSky polling, CSV+Parquet output, Ctrl+C shutdown, meta.json sidecar |
+| 2026-04-05 | Phase 3 | UDP replay streamer complete: timestamp-ordered delivery, speed multiplier, loop mode, header flag, Ctrl+C |

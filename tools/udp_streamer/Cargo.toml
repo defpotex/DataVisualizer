@@ -9,4 +9,5 @@ name = "udp_streamer"
 path = "src/main.rs"
 
 [dependencies]
-# Phase 3 — dependencies added when implemented
+polars = { version = "0.44", features = ["csv", "lazy"] }
+ctrlc = "3"

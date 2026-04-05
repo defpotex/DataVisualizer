@@ -122,17 +122,88 @@ timestamp,icao24,callsign,lat,lon,altitude_m,velocity_ms,heading_deg,vertical_ra
 
 ## `udp_streamer` — UDP Replay Streamer
 
-> **Not yet implemented** — planned for Phase 3.
+Reads any CSV file and replays rows over UDP as newline-delimited strings, timing delivery to match the original timestamps at a configurable speed multiplier. Used to drive the main app's UDP ingestion (Phase 10) without a live feed.
 
-Will replay any CSV file over UDP as newline-delimited rows, respecting timestamp ordering and supporting a configurable speed multiplier.
+### Quick Start
 
-**Planned usage:**
 ```bash
-# Replay ADS-B data at 10× speed to localhost:5005
-cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 127.0.0.1:5005 --speed 10
+# Stream at 50× speed with header row, to default localhost:5005
+cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 50 --header
 
-# Loop continuously
-cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 127.0.0.1:5005 --loop
+# Loop continuously at 10× speed
+cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 10 --loop
+
+# Send to a remote host
+cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 192.168.1.10:9000 --speed 5
 ```
 
-See [roadmap.md](roadmap.md) Phase 3 for full planned feature list.
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--file <PATH>` | *(required)* | CSV file to replay |
+| `--target <HOST:PORT>` | `127.0.0.1:5005` | UDP destination address |
+| `--speed <MULT>` | `1.0` | Playback speed multiplier. `1.0` = real-time, `60.0` = 1 min/sec |
+| `--loop` | off | Restart from row 1 when the file ends |
+| `--header` | off | Send the CSV header row as the first UDP packet each pass |
+| `--help` | — | Print usage and exit |
+
+### Packet Format
+
+Each UDP packet is one CSV row: `field1,field2,...\n` (newline-terminated, UTF-8). The main app splits on newline and parses as CSV. The `--header` flag sends the column names first so receivers can auto-detect field order.
+
+### Timing Behavior
+
+- Rows are sorted by `timestamp` on load (column must be named `timestamp`).
+- Wall-clock delay between packets = (timestamp delta) ÷ speed.
+- Rows with identical timestamps are sent in a burst with no delay.
+- `--speed 1.0` replays at real time. `--speed 0` is not valid — use a large multiplier (e.g. `--speed 99999`) for max-rate testing.
+- The tool sleeps in 50ms chunks so Ctrl+C is always responsive.
+
+### Verify Without the Main App
+
+```bash
+# Terminal 1 — listen for raw UDP packets (Linux/macOS/WSL)
+nc -ul 5005
+
+# Terminal 2 — stream at 100× with header
+cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 100 --header
+```
+
+### Example Output
+
+```
+  Loading test_data/adsb_conus.csv…
+  Formatting 63204 rows…
+  Ready: 63204 rows, timestamps 1712001600 → 1712005260
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  UDP Streamer
+  File     : test_data/adsb_conus.csv
+  Target   : 127.0.0.1:5005
+  Rows     : 63204
+  Sim span : 3660s (61.0 min)
+  Speed    : 50×  →  real duration ~73s
+  Loop     : no
+  Header   : yes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      1000 rows sent  |  sim t=1712001600  |  867 rows/sec  |  1s elapsed
+      2000 rows sent  |  sim t=1712001660  |  ...
+  ...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Done.
+  Rows sent : 63204
+  Passes    : 1
+  Elapsed   : 73.2s
+  Avg rate  : 863 rows/sec
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Notes
+
+- **`timestamp` column required:** The CSV must have a column named exactly `timestamp`. The `adsb_fetcher` output satisfies this. For other CSVs, rename the time column or add one.
+- **UDP is fire-and-forget:** If the receiver isn't listening, packets are silently dropped — no error. Start the receiver before the streamer.
+- **Large files:** All rows are loaded into memory on startup. A 200k-row file uses ~100–200 MB RAM during formatting.
+- **Windows `nc`:** The `nc` (netcat) command may not be available on Windows by default. Use WSL, or write a simple Python listener: `python -m udprecv` or a short script.
