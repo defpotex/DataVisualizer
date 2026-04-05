@@ -205,21 +205,21 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 
 ---
 
-### Phase 2 — Test Data: ADS-B CSV Generator ⬜
+### Phase 2 — Test Data: ADS-B CSV Generator ✅
 *Goal: Produce a large, realistic CSV (and Parquet) test dataset from live ADS-B traffic. Used by all subsequent phases.*
 
 > **Workspace location:** `tools/adsb_fetcher/` — standalone binary, not part of the main app.
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F0.1.1 | OpenSky Network API polling | ⬜ | GET `/states/all?lamin=…` — no API key for public data |
-| F0.1.2 | Configurable bbox + duration | ⬜ | Default: CONUS, 2 hours, 60s poll interval |
-| F0.1.3 | CSV output with standard schema | ⬜ | `timestamp, icao24, callsign, lat, lon, altitude_m, velocity_ms, heading_deg, vertical_rate_ms, on_ground, squawk` |
-| F0.1.4 | Dedup + sort by timestamp | ⬜ | Clean output, no duplicate state vectors |
-| F0.1.5 | Parquet output (same data) | ⬜ | Via `polars` — tests Parquet loading in Phase 4 |
-| F0.1.6 | Volume target | ⬜ | 50k–200k rows; print row count + file size on completion |
+| F0.1.1 | OpenSky Network API polling | ✅ | GET `/states/all?lamin=…` — no API key for public data |
+| F0.1.2 | Configurable bbox + duration | ✅ | `--bbox`, `--duration`, `--interval`, `--output`, `--name` |
+| F0.1.3 | CSV output with standard schema | ✅ | `timestamp, icao24, callsign, lat, lon, altitude_m, velocity_ms, heading_deg, vertical_rate_ms, on_ground, squawk` |
+| F0.1.4 | Dedup + sort by timestamp | ✅ | Polars lazy sort on finalize |
+| F0.1.5 | Parquet output (same data) | ✅ | Snappy-compressed via polars ParquetWriter |
+| F0.1.6 | Volume target | ✅ | Prints row count + file sizes on completion; `.meta.json` sidecar |
 
-**Exit criteria:** Running `cargo run -p adsb_fetcher` produces `test_data/adsb_conus.csv` and `test_data/adsb_conus.parquet` with ≥50,000 rows of real aircraft state vectors.
+**Exit criteria:** Running `cargo run -p adsb_fetcher` produces `test_data/adsb_conus.csv` and `test_data/adsb_conus.parquet` with ≥50,000 rows of real aircraft state vectors. ✅
 
 ---
 
@@ -414,3 +414,4 @@ cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 127.0.0.1:
 | 2026-04-04 | — | Initial roadmap created |
 | 2026-04-04 | F0 | Added test data infrastructure phases: ADS-B CSV generator (Phase 2) and UDP replay streamer (Phase 3); existing phases renumbered 4–14 |
 | 2026-04-04 | Phase 1 | Foundation complete: workspace scaffold, eframe window, 3-panel layout, Engineering Dark theme, persistent window geometry |
+| 2026-04-04 | Phase 2 | ADS-B CSV generator complete: OpenSky polling, CSV+Parquet output, Ctrl+C shutdown, meta.json sidecar |

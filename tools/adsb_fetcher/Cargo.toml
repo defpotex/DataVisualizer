@@ -9,4 +9,10 @@ name = "adsb_fetcher"
 path = "src/main.rs"
 
 [dependencies]
-# Phase 2 — dependencies added when implemented
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+polars = { version = "0.44", features = ["csv", "parquet", "lazy"] }
+chrono = { version = "0.4", features = ["serde"] }
+ctrlc = "3"
