@@ -1,30 +1,12 @@
 use crate::theme::AppTheme;
-use egui::{menu, Color32, RichText, Ui};
+use egui::{menu, Align2, Color32, FontId, RichText, Ui};
 
 #[derive(Default)]
 pub struct MenuBar;
 
 impl MenuBar {
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme) {
-        let c = &theme.colors;
-
         ui.horizontal(|ui| {
-            // ── Logo / app name ───────────────────────────────────────────────
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("◈")
-                    .color(c.accent_primary)
-                    .size(theme.spacing.font_body + 2.0),
-            );
-            ui.label(
-                RichText::new("DATAVISUALIZER")
-                    .color(c.text_primary)
-                    .size(theme.spacing.font_body)
-                    .strong(),
-            );
-
-            ui.add_space(12.0);
-            ui.separator();
             ui.add_space(4.0);
 
             // ── File ──────────────────────────────────────────────────────────
@@ -90,51 +72,71 @@ fn menu_item(ui: &mut Ui, label: &str, theme: &AppTheme, contents: impl FnOnce(&
 
 fn menu_entry(ui: &mut Ui, label: &str, shortcut: &str, theme: &AppTheme) {
     let c = &theme.colors;
-    ui.horizontal(|ui| {
-        if ui
-            .add(egui::Button::new(
-                RichText::new(label)
-                    .color(c.text_primary)
-                    .size(theme.spacing.font_body),
-            ).min_size(egui::vec2(160.0, 0.0)))
-            .clicked()
-        {
-            ui.close_menu();
+    let s = &theme.spacing;
+    let row_height = s.font_body + 10.0;
+    let width = ui.available_width().max(200.0);
+
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(width, row_height),
+        egui::Sense::click(),
+    );
+
+    if ui.is_rect_visible(rect) {
+        if response.hovered() {
+            ui.painter().rect_filled(rect, s.rounding - 1.0, c.widget_bg_hovered);
         }
+        ui.painter().text(
+            rect.left_center() + egui::vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(s.font_body),
+            c.text_primary,
+        );
         if !shortcut.is_empty() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(shortcut)
-                        .color(c.text_secondary)
-                        .size(theme.spacing.font_small),
-                );
-            });
+            ui.painter().text(
+                rect.right_center() - egui::vec2(8.0, 0.0),
+                Align2::RIGHT_CENTER,
+                shortcut,
+                FontId::proportional(s.font_small),
+                c.text_secondary,
+            );
         }
-    });
+    }
+
+    if response.clicked() {
+        ui.close_menu();
+    }
 }
 
 fn menu_entry_disabled(ui: &mut Ui, label: &str, shortcut: &str, theme: &AppTheme) {
     let c = &theme.colors;
-    ui.horizontal(|ui| {
-        ui.add_enabled(
-            false,
-            egui::Button::new(
-                RichText::new(label)
-                    .color(dimmed(c.text_secondary))
-                    .size(theme.spacing.font_body),
-            )
-            .min_size(egui::vec2(160.0, 0.0)),
+    let s = &theme.spacing;
+    let row_height = s.font_body + 10.0;
+    let width = ui.available_width().max(200.0);
+
+    let (rect, _response) = ui.allocate_exact_size(
+        egui::vec2(width, row_height),
+        egui::Sense::hover(),
+    );
+
+    if ui.is_rect_visible(rect) {
+        ui.painter().text(
+            rect.left_center() + egui::vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(s.font_body),
+            dimmed(c.text_secondary),
         );
         if !shortcut.is_empty() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(shortcut)
-                        .color(dimmed(c.text_secondary))
-                        .size(theme.spacing.font_small),
-                );
-            });
+            ui.painter().text(
+                rect.right_center() - egui::vec2(8.0, 0.0),
+                Align2::RIGHT_CENTER,
+                shortcut,
+                FontId::proportional(s.font_small),
+                dimmed(c.text_secondary),
+            );
         }
-    });
+    }
 }
 
 fn menu_section_label(ui: &mut Ui, label: &str, theme: &AppTheme) {

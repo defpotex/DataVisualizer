@@ -76,6 +76,16 @@ impl DataVisualizerApp {
 
 impl eframe::App for DataVisualizerApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Re-apply theme every frame. egui Styles are stored in an Arc so this
+        // is a cheap pointer swap, not a deep copy. Doing it here guarantees
+        // popup/menu windows (which open in a new egui pass) always inherit
+        // our visuals rather than any defaults eframe may reset between frames.
+        {
+            let mut style = (*ctx.style()).clone();
+            self.theme.apply_to_style(&mut style);
+            ctx.set_style(style);
+        }
+
         let theme = &self.theme;
 
         // ── Top menu bar ──────────────────────────────────────────────────────

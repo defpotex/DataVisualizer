@@ -148,6 +148,15 @@ impl AppTheme {
         // Widgets
         let rw = Rounding::same(s.rounding - 1.0);
 
+        // noninteractive — used for popup/menu frame backgrounds, separators,
+        // and non-clickable labels. Must be set explicitly or egui falls back
+        // to its own defaults (which can be light-colored).
+        visuals.widgets.noninteractive.bg_fill = c.bg_panel;
+        visuals.widgets.noninteractive.weak_bg_fill = c.bg_app;
+        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, c.border);
+        visuals.widgets.noninteractive.rounding = rw;
+        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, c.text_secondary);
+
         visuals.widgets.inactive.bg_fill = c.widget_bg;
         visuals.widgets.inactive.weak_bg_fill = c.widget_bg;
         visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, c.border);
