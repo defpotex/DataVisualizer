@@ -14,7 +14,7 @@ impl MenuBar {
             ui.add_space(4.0);
 
             menu::bar(ui, |ui| {
-                ui.set_style(ui.style().clone());
+                // (no-op; egui 0.34 inherits style automatically)
 
                 menu_item(ui, "File", theme, |ui| {
                     menu_entry(ui, "New Session", "Ctrl+N", theme);
@@ -33,7 +33,7 @@ impl MenuBar {
                     menu_section_label(ui, "Add Source", theme);
                     if menu_entry(ui, "CSV File…", "", theme) {
                         action = Some(MenuAction::OpenCsv);
-                        ui.close_menu();
+                        ui.close();
                     }
                     menu_entry_disabled(ui, "Parquet File…", "", theme);
                     menu_entry_disabled(ui, "UDP Stream…", "", theme);

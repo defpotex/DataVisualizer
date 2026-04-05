@@ -48,9 +48,9 @@ impl DataVisualizerApp {
 
         let theme = AppTheme::from_preset(persisted.theme_preset);
 
-        let mut style = (*cc.egui_ctx.style()).clone();
+        let mut style = (*cc.egui_ctx.global_style()).clone();
         theme.apply_to_style(&mut style);
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx.set_global_style(style);
 
         setup_fonts(&cc.egui_ctx);
 
@@ -67,9 +67,9 @@ impl DataVisualizerApp {
     #[allow(dead_code)]
     pub fn apply_theme(&mut self, preset: ThemePreset, ctx: &Context) {
         self.theme = AppTheme::from_preset(preset);
-        let mut style = (*ctx.style()).clone();
+        let mut style = (*ctx.global_style()).clone();
         self.theme.apply_to_style(&mut style);
-        ctx.set_style(style);
+        ctx.set_global_style(style);
     }
 
     /// Open a native file dialog and kick off an async CSV load.
@@ -91,12 +91,16 @@ impl DataVisualizerApp {
 }
 
 impl eframe::App for DataVisualizerApp {
+    /// eframe 0.34 requires `ui` as the primary trait method.
+    /// We override `update` instead (which gives us `ctx`), so this stub is never called.
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Re-apply theme every frame so popups/menus always use our visuals.
         {
-            let mut style = (*ctx.style()).clone();
+            let mut style = (*ctx.global_style()).clone();
             self.theme.apply_to_style(&mut style);
-            ctx.set_style(style);
+            ctx.set_global_style(style);
         }
 
         // Drain background-thread events (new sources, errors).
@@ -115,18 +119,18 @@ impl eframe::App for DataVisualizerApp {
         let mut pane_action: Option<PaneAction> = None;
 
         // ── Menu bar ──────────────────────────────────────────────────────────
-        egui::TopBottomPanel::top("menu_bar")
+        egui::Panel::top("menu_bar")
             .frame(menu_bar_frame(&theme))
             .show(ctx, |ui| {
                 menu_action = self.menu_bar.show(ui, &theme);
             });
 
         // ── Left pane ─────────────────────────────────────────────────────────
-        egui::SidePanel::left("left_pane")
+        egui::Panel::left("left_pane")
             .resizable(true)
-            .default_width(self.left_pane_width)
-            .min_width(theme.spacing.left_pane_min_width)
-            .max_width(theme.spacing.left_pane_max_width)
+            .default_size(self.left_pane_width)
+            .min_size(theme.spacing.left_pane_min_width)
+            .max_size(theme.spacing.left_pane_max_width)
             .frame(side_panel_frame(&theme))
             .show(ctx, |ui| {
                 self.left_pane_width = ui.available_width() + ui.spacing().item_spacing.x;
@@ -165,6 +169,7 @@ pub enum MenuAction {
 pub enum PaneAction {
     OpenCsv,
     RemoveSource(usize),
+    AddPlot(crate::plot::plot_config::MapPlotConfig),
 }
 
 impl DataVisualizerApp {
@@ -178,6 +183,12 @@ impl DataVisualizerApp {
         match action {
             PaneAction::OpenCsv => self.open_csv_dialog(),
             PaneAction::RemoveSource(id) => self.app_state.remove_source(id),
+            PaneAction::AddPlot(mut config) => {
+                config.id = self.app_state.alloc_plot_id();
+                let plot_config = crate::plot::plot_config::PlotConfig::Map(config.clone());
+                self.app_state.plots.push(plot_config);
+                self.plot_area.add_map_plot(config, &self.app_state);
+            }
         }
     }
 }
@@ -187,7 +198,7 @@ impl DataVisualizerApp {
 fn menu_bar_frame(theme: &AppTheme) -> egui::Frame {
     egui::Frame {
         fill: theme.colors.bg_panel,
-        inner_margin: egui::Margin::symmetric(8.0, 4.0),
+        inner_margin: egui::Margin::from(egui::vec2(8.0, 4.0)),
         stroke: egui::Stroke::new(1.0, theme.colors.border),
         ..Default::default()
     }
@@ -196,7 +207,7 @@ fn menu_bar_frame(theme: &AppTheme) -> egui::Frame {
 fn side_panel_frame(theme: &AppTheme) -> egui::Frame {
     egui::Frame {
         fill: theme.colors.bg_panel,
-        inner_margin: egui::Margin::same(theme.spacing.panel_padding),
+        inner_margin: egui::Margin::from(theme.spacing.panel_padding),
         stroke: egui::Stroke::new(1.0, theme.colors.border),
         ..Default::default()
     }
@@ -205,7 +216,7 @@ fn side_panel_frame(theme: &AppTheme) -> egui::Frame {
 fn plot_area_frame(theme: &AppTheme) -> egui::Frame {
     egui::Frame {
         fill: theme.colors.bg_app,
-        inner_margin: egui::Margin::same(0.0),
+        inner_margin: egui::Margin::from(0.0_f32),
         ..Default::default()
     }
 }

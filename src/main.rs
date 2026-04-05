@@ -1,5 +1,6 @@
 mod app;
 mod data;
+mod plot;
 mod state;
 mod theme;
 mod ui;

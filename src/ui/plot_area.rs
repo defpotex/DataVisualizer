@@ -1,13 +1,24 @@
+use crate::plot::plot_config::MapPlotConfig;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
+use crate::ui::plot_grid::PlotGrid;
 use egui::{Align, Layout, RichText, Ui};
 
 #[derive(Default)]
-pub struct PlotArea;
+pub struct PlotArea {
+    plot_grid: PlotGrid,
+}
 
 impl PlotArea {
+    /// Add a new map plot (called by app after the dialog completes).
+    pub fn add_map_plot(&mut self, config: MapPlotConfig, state: &AppState) {
+        self.plot_grid.add_map_plot(config, state);
+    }
+
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState) {
-        if state.has_sources() {
+        if !self.plot_grid.is_empty() {
+            self.plot_grid.show(ui, theme);
+        } else if state.has_sources() {
             self.show_has_sources(ui, theme, state);
         } else {
             self.show_empty(ui, theme);
@@ -104,8 +115,8 @@ fn quick_hint(ui: &mut Ui, label: &str, desc: &str, theme: &AppTheme) {
     egui::Frame::default()
         .fill(c.bg_panel)
         .stroke(egui::Stroke::new(1.0, c.border))
-        .rounding(s.rounding)
-        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+        .corner_radius(s.rounding)
+        .inner_margin(egui::Margin::from(egui::vec2(12.0, 8.0)))
         .show(ui, |ui| {
             ui.set_width(100.0);
             ui.with_layout(Layout::top_down(Align::Center), |ui| {

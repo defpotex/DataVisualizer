@@ -1,4 +1,5 @@
 use crate::data::source::{DataSource, SourceId};
+use crate::plot::plot_config::PlotConfig;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 /// Events sent from background threads to the UI thread.
@@ -15,7 +16,13 @@ pub struct AppState {
     pub sources: Vec<DataSource>,
 
     /// Monotonically increasing ID counter for new sources.
-    next_id: SourceId,
+    next_source_id: SourceId,
+
+    /// Serializable plot configurations (used for session persistence).
+    pub plots: Vec<PlotConfig>,
+
+    /// Monotonically increasing ID counter for new plots.
+    plot_id_counter: usize,
 
     /// Sender cloned and handed to background loader threads.
     pub event_tx: Sender<DataEvent>,
@@ -31,7 +38,9 @@ impl Default for AppState {
         let (tx, rx) = unbounded();
         Self {
             sources: Vec::new(),
-            next_id: 0,
+            next_source_id: 0,
+            plots: Vec::new(),
+            plot_id_counter: 0,
             event_tx: tx,
             event_rx: rx,
             notifications: Vec::new(),
@@ -42,8 +51,15 @@ impl Default for AppState {
 impl AppState {
     /// Allocate and return the next source ID.
     pub fn next_source_id(&mut self) -> SourceId {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.next_source_id;
+        self.next_source_id += 1;
+        id
+    }
+
+    /// Allocate and return the next plot ID.
+    pub fn alloc_plot_id(&mut self) -> usize {
+        let id = self.plot_id_counter;
+        self.plot_id_counter += 1;
         id
     }
 

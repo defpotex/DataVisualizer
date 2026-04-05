@@ -2,6 +2,7 @@ use crate::app::PaneAction;
 use crate::data::schema::FieldKind;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
+use crate::ui::add_plot_dialog::AddPlotDialog;
 use egui::{RichText, Ui};
 
 pub struct LeftPane {
@@ -11,16 +12,18 @@ pub struct LeftPane {
     section_sources_open: bool,
     section_plots_open: bool,
     section_filters_open: bool,
+    /// Add Plot modal dialog
+    add_plot_dialog: AddPlotDialog,
 }
 
 impl Default for LeftPane {
     fn default() -> Self {
         Self {
             fields_expanded: std::collections::HashSet::new(),
-            // All sections open by default
             section_sources_open: true,
             section_plots_open: true,
             section_filters_open: true,
+            add_plot_dialog: AddPlotDialog::default(),
         }
     }
 }
@@ -110,19 +113,21 @@ impl LeftPane {
                     &mut self.section_plots_open,
                     |ui| {
                         ui.add_space(4.0);
-                        ui.add_enabled(
-                            state.has_sources(),
-                            egui::Button::new(
-                                RichText::new("＋  Add Plot")
-                                    .color(if state.has_sources() {
-                                        c.accent_primary
-                                    } else {
-                                        c.text_secondary
-                                    })
-                                    .size(s.font_body),
-                            )
-                            .min_size(egui::vec2(ui.available_width(), 0.0)),
-                        );
+                        let btn = egui::Button::new(
+                            RichText::new("＋  Add Plot")
+                                .color(if state.has_sources() {
+                                    c.accent_primary
+                                } else {
+                                    c.text_secondary
+                                })
+                                .size(s.font_body),
+                        )
+                        .min_size(egui::vec2(ui.available_width(), 0.0));
+
+                        if ui.add_enabled(state.has_sources(), btn).clicked() {
+                            self.add_plot_dialog.open();
+                        }
+
                         if !state.has_sources() {
                             ui.add_space(4.0);
                             ui.label(
@@ -132,9 +137,25 @@ impl LeftPane {
                                     .italics(),
                             );
                         }
+
+                        // Show plot count when plots exist
+                        if !state.plots.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!("{} plot(s) active", state.plots.len()))
+                                    .color(c.accent_secondary)
+                                    .size(s.font_small),
+                            );
+                        }
+
                         ui.add_space(6.0);
                     },
                 );
+
+                // Render Add Plot dialog (floating window, outside the section frame)
+                if let Some(config) = self.add_plot_dialog.show(ui, theme, state) {
+                    action = Some(PaneAction::AddPlot(config));
+                }
 
                 ui.add_space(4.0);
 
@@ -248,11 +269,11 @@ fn collapsible_section(
         egui::Frame::default()
             .fill(c.bg_panel)
             .stroke(egui::Stroke::new(1.0, c.border))
-            .rounding(egui::Rounding {
-                nw: 0.0, ne: 0.0,
-                sw: s.rounding, se: s.rounding,
+            .corner_radius(egui::CornerRadius {
+                nw: 0, ne: 0,
+                sw: s.rounding as u8, se: s.rounding as u8,
             })
-            .inner_margin(egui::Margin::symmetric(s.panel_padding, 4.0))
+            .inner_margin(egui::Margin::from(egui::vec2(s.panel_padding, 4.0)))
             .show(ui, content);
     }
 }
@@ -272,8 +293,8 @@ fn source_card(
     egui::Frame::default()
         .fill(c.bg_app)
         .stroke(egui::Stroke::new(1.0, c.border))
-        .rounding(s.rounding)
-        .inner_margin(egui::Margin::same(8.0))
+        .corner_radius(s.rounding)
+        .inner_margin(egui::Margin::from(8.0_f32))
         .show(ui, |ui| {
             // Header: dot + name
             ui.horizontal(|ui| {

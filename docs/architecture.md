@@ -20,9 +20,9 @@
 
 | Layer | Crate(s) | Rationale | Req. Reference |
 |---|---|---|---|
-| GUI Framework | `eframe` + `egui` 0.29+ | Pure Rust, single binary, immediate-mode (ideal for real-time data), no webview dependency | §1.2, §8.1 |
+| GUI Framework | `eframe` + `egui` 0.34 | Pure Rust, single binary, immediate-mode (ideal for real-time data), no webview dependency | §1.2, §8.1 |
 | Standard Plots | `egui_plot` | Native egui integration, supports zoom/pan/linked axes out of the box | §4.1.3–4.1.5, §3.4.7 |
-| Map Rendering | `walkers` | Offline tile support, integrates with egui, supports custom tile providers | §4.1.1.1–4.1.1.2 |
+| Map Rendering | `walkers 0.53` | Slippy map widget for egui; `HttpTiles` + `Plugin` trait for custom overlays; custom tile sources via `TileSource` trait | §4.1.1.1–4.1.1.2 |
 | Data Engine | `polars` | Handles CSV + Parquet natively, lazy evaluation, fast filtering/aggregation, columnar | §2.1.1–2.1.2, §3.4.1, §3.4.6 |
 | UDP Streaming | `std::net::UdpSocket` + `tokio` | Stdlib UDP + async runtime for non-blocking stream ingestion | §2.1.3–2.1.4 |
 | ADSB Decoding | `adsb_deku` (or custom) | Decodes Mode S / ADS-B Beast/AVR/JSON formats | §2.1.4 |
@@ -362,16 +362,18 @@ src/
 ├── ui/
 │   ├── mod.rs
 │   ├── menu_bar.rs          # Top menu (§6)
-│   ├── left_pane.rs         # Left panel (§7)
-│   ├── plot_area.rs         # Plot grid layout manager
-│   └── playback_bar.rs      # Playback controls (§3.5)
+│   ├── left_pane.rs         # Left panel (§7) — with AddPlotDialog embedded
+│   ├── add_plot_dialog.rs   # Floating modal for creating plots (Phase 5)
+│   ├── plot_area.rs         # Hosts PlotGrid, shows empty/has-sources/has-plots states
+│   ├── plot_grid.rs         # Responsive 1–2 column grid of plot cells (Phase 5)
+│   └── playback_bar.rs      # Playback controls (§3.5) [future]
 ├── plot/
 │   ├── mod.rs
-│   ├── map_plot.rs          # Geographic map (walkers + custom layers)
-│   ├── scatter_plot.rs      # X/Y scatter (egui_plot)
-│   ├── bar_plot.rs          # Bar chart (egui_plot)
-│   ├── scroll_chart.rs      # Streaming scroll chart (egui_plot)
-│   └── plot_config.rs       # Shared PlotConfig struct
+│   ├── map_plot.rs          # Geographic map (walkers 0.53 HttpTiles + Plugin trait)
+│   ├── scatter_plot.rs      # X/Y scatter (egui_plot) [future]
+│   ├── bar_plot.rs          # Bar chart (egui_plot) [future]
+│   ├── scroll_chart.rs      # Streaming scroll chart (egui_plot) [future]
+│   └── plot_config.rs       # PlotConfig enum, MapPlotConfig, TileScheme (serde)
 ├── geo/
 │   ├── mod.rs
 │   ├── boundary.rs          # Load/parse GeoJSON, SHP boundaries
@@ -405,3 +407,5 @@ These existing tools inform design decisions and UX patterns:
 | 0.1 | 2026-04-04 | Initial architecture document created |
 | 0.2 | 2026-04-04 | Added workspace layout with `tools/` binaries for test data generation |
 | 0.3 | 2026-04-04 | Phase 1 built: eframe app, Engineering Dark theme (`src/theme.rs`), three-panel layout, persistent geometry |
+| 0.4 | 2026-04-05 | Phases 2–4: ADS-B fetcher, UDP streamer, CSV loading, source panel with schema detection |
+| 0.5 | 2026-04-05 | Phase 5: Map plot implemented. Added `src/plot/` module (`plot_config.rs`, `map_plot.rs`), `src/ui/add_plot_dialog.rs`, `src/ui/plot_grid.rs`. Upgraded egui/eframe 0.29→0.34, walkers pinned to 0.53. `PlotConfig` enum enables future scatter/bar/scroll plot types. `AppState` now tracks `plots: Vec<PlotConfig>`. |
