@@ -404,3 +404,4 @@ These existing tools inform design decisions and UX patterns:
 |---|---|---|
 | 0.1 | 2026-04-04 | Initial architecture document created |
 | 0.2 | 2026-04-04 | Added workspace layout with `tools/` binaries for test data generation |
+| 0.3 | 2026-04-04 | Phase 1 built: eframe app, Engineering Dark theme (`src/theme.rs`), three-panel layout, persistent geometry |

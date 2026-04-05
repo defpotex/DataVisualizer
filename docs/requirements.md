@@ -97,6 +97,13 @@ Vehicle Track/Telemetry Visualization Application
         8.1.2 Application shall provide a 'cancel operation' button to immediately halt an operation if it takes too long
     8.2 Application shall support Ctrl+Z/Ctrl+Y for Undo and Redo
         8.2.1 Undo shall revert to previous application state, with the exception of data added by stream/playback 
-    
 
+
+---
+
+## Backlog / Feature Ideas
+
+> Ideas that aren't formal requirements yet. Collected here for consideration during future roadmap planning.
+
+- **User-selectable themes:** Allow users to switch between named color/layout themes (e.g. "Engineering Dark", "Light", "High Contrast", "Radar Green"). Theme controls colors, fonts, spacing, and panel proportions. Implementation should use a centralized `AppTheme` struct so themes are swappable at runtime with zero code changes elsewhere.
 

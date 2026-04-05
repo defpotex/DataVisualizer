@@ -1,0 +1,12 @@
+[package]
+name = "udp_streamer"
+version = "0.1.0"
+edition = "2021"
+description = "Replay a CSV file over UDP to simulate a live data stream"
+
+[[bin]]
+name = "udp_streamer"
+path = "src/main.rs"
+
+[dependencies]
+# Phase 3 — dependencies added when implemented

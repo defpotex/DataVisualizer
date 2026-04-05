@@ -9,7 +9,7 @@ Design documentation in docs/ folder.
 - System Design & Architecture:    docs/architecture.md
 - Priority-ordered Feature Roadmap: docs/roadmap.md
 
-Current Build Phase: Not yet started — Phase 1 (Foundation) is next.
+Current Build Phase: Phase 1 ✅ complete. Phase 2 (ADS-B CSV Generator) is next.
 
 
 Behavior Requirements:
