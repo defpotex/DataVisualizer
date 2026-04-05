@@ -326,6 +326,24 @@ session.tay (ZIP archive)
 ## Module Breakdown
 
 ```
+Cargo.toml                   # workspace root
+├── src/                     # main app (datavisualizer)
+│   ├── main.rs
+tools/
+├── adsb_fetcher/            # test data: fetch ADS-B → CSV/Parquet
+│   ├── Cargo.toml
+│   └── src/main.rs
+├── udp_streamer/            # test data: replay CSV over UDP
+│   ├── Cargo.toml
+│   └── src/main.rs
+test_data/                   # .gitignored output from tools
+├── adsb_conus.csv
+└── adsb_conus.parquet
+```
+
+### Main App Module Tree
+
+```
 src/
 ├── main.rs                  # eframe entry point, app init
 ├── app.rs                   # AppState struct, top-level update() and draw()
@@ -385,3 +403,4 @@ These existing tools inform design decisions and UX patterns:
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-04-04 | Initial architecture document created |
+| 0.2 | 2026-04-04 | Added workspace layout with `tools/` binaries for test data generation |

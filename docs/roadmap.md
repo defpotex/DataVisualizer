@@ -24,6 +24,23 @@
 - ⬜ **F1.4** Panel resize (left pane drag-to-resize)
 - ⬜ **F1.5** Persistent window geometry (size/position saved on exit)
 
+### F0 — Test Data Infrastructure
+*(Separate workspace binaries in `tools/`. Not part of the main app — used for development and testing only.)*
+
+- ⬜ **F0.1** ADS-B CSV Generator (`tools/adsb_fetcher`)
+  - ⬜ F0.1.1 Fetch live state vectors from OpenSky Network REST API (no auth required for public data)
+  - ⬜ F0.1.2 Configurable: bounding box (default: CONUS), polling interval, total duration
+  - ⬜ F0.1.3 Write to CSV with standardized schema: `timestamp, icao24, callsign, lat, lon, altitude_m, velocity_ms, heading_deg, vertical_rate_ms, on_ground, squawk`
+  - ⬜ F0.1.4 Deduplicate / sort by timestamp before writing
+  - ⬜ F0.1.5 Target output: ~50,000–200,000 rows covering several hours of real traffic
+  - ⬜ F0.1.6 Also write a companion `.parquet` version of the same data (via polars)
+- ⬜ **F0.2** UDP Replay Streamer (`tools/udp_streamer`)
+  - ⬜ F0.2.1 Read any CSV file (produced by F0.1 or any other source)
+  - ⬜ F0.2.2 Replay rows over UDP as newline-delimited CSV strings, respecting original timestamps
+  - ⬜ F0.2.3 Configurable: target `host:port`, speed multiplier (1x–100x), loop mode
+  - ⬜ F0.2.4 Print stats to stdout: rows sent, elapsed time, current simulated timestamp
+  - ⬜ F0.2.5 Graceful Ctrl+C shutdown
+
 ### F2 — Data Ingestion
 - ⬜ **F2.1** CSV file loading via `rfd` file dialog + `polars`
   - ⬜ F2.1.1 Schema auto-detection (lat/lon/time/altitude field heuristics)
@@ -164,8 +181,10 @@
 This is the sequence we follow. Each phase produces a usable, committable milestone.
 
 ```
-Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6+
-Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6 ──► Phase 7+
+Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
+            (CSV gen +
+             UDP tool)
 ```
 
 ---
@@ -185,8 +204,48 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 2 — CSV Data Loading ⬜
-*Goal: Load a CSV, see data in the source panel, inspect fields.*
+### Phase 2 — Test Data: ADS-B CSV Generator ⬜
+*Goal: Produce a large, realistic CSV (and Parquet) test dataset from live ADS-B traffic. Used by all subsequent phases.*
+
+> **Workspace location:** `tools/adsb_fetcher/` — standalone binary, not part of the main app.
+
+| ID | Feature | Status | Notes |
+|---|---|---|---|
+| F0.1.1 | OpenSky Network API polling | ⬜ | GET `/states/all?lamin=…` — no API key for public data |
+| F0.1.2 | Configurable bbox + duration | ⬜ | Default: CONUS, 2 hours, 60s poll interval |
+| F0.1.3 | CSV output with standard schema | ⬜ | `timestamp, icao24, callsign, lat, lon, altitude_m, velocity_ms, heading_deg, vertical_rate_ms, on_ground, squawk` |
+| F0.1.4 | Dedup + sort by timestamp | ⬜ | Clean output, no duplicate state vectors |
+| F0.1.5 | Parquet output (same data) | ⬜ | Via `polars` — tests Parquet loading in Phase 4 |
+| F0.1.6 | Volume target | ⬜ | 50k–200k rows; print row count + file size on completion |
+
+**Exit criteria:** Running `cargo run -p adsb_fetcher` produces `test_data/adsb_conus.csv` and `test_data/adsb_conus.parquet` with ≥50,000 rows of real aircraft state vectors.
+
+---
+
+### Phase 3 — Test Data: UDP Replay Streamer ⬜
+*Goal: A tool to replay any CSV over UDP — used to test Phase 9 (UDP ingestion) and Phase 10 (live streaming UI).*
+
+> **Workspace location:** `tools/udp_streamer/` — standalone binary, not part of the main app.
+
+| ID | Feature | Status | Notes |
+|---|---|---|---|
+| F0.2.1 | Read any CSV file | ⬜ | Path via CLI arg |
+| F0.2.2 | Replay rows over UDP | ⬜ | Newline-delimited CSV strings, respects timestamp ordering |
+| F0.2.3 | CLI config: host:port, speed, loop | ⬜ | e.g. `--target 127.0.0.1:5005 --speed 10 --loop` |
+| F0.2.4 | Stdout progress stats | ⬜ | Rows/sec, elapsed, current sim timestamp |
+| F0.2.5 | Graceful Ctrl+C shutdown | ⬜ | Flush + exit cleanly |
+
+**Usage example:**
+```
+cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 127.0.0.1:5005 --speed 20 --loop
+```
+
+**Exit criteria:** Running the streamer sends UDP packets readable by `nc -ul 5005`; rows arrive in timestamp order at the configured speed multiplier.
+
+---
+
+### Phase 4 — CSV Data Loading ⬜
+*Goal: Load a CSV, see data in the source panel, inspect fields. Uses the dataset from Phase 2.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
@@ -199,8 +258,8 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 3 — Map Plot ⬜
-*Goal: Plot lat/lon data on an interactive map.*
+### Phase 5 — Map Plot ⬜
+*Goal: Plot lat/lon data on an interactive map. Uses the ADS-B CSV from Phase 2.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
@@ -217,7 +276,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 4 — Scatter Plot + Basic Filters ⬜
+### Phase 6 — Scatter Plot + Basic Filters ⬜
 *Goal: Second plot type, plus attribute filtering.*
 
 | ID | Feature | Status | Notes |
@@ -233,7 +292,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 5 — Data Styling ⬜
+### Phase 7 — Data Styling ⬜
 *Goal: Color/size/transparency by field value; hover customization.*
 
 | ID | Feature | Status | Notes |
@@ -247,7 +306,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 6 — Point Selection & Context Menu ⬜
+### Phase 8 — Point Selection & Context Menu ⬜
 *Goal: Select data points, right-click for context actions.*
 
 | ID | Feature | Status | Notes |
@@ -262,7 +321,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 7 — Playback Engine ⬜
+### Phase 9 — Playback Engine ⬜
 *Goal: Replay static CSV as streaming data with time controls.*
 
 | ID | Feature | Status | Notes |
@@ -277,8 +336,8 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 8 — UDP Streaming ⬜
-*Goal: Real-time live data ingestion.*
+### Phase 10 — UDP Streaming ⬜
+*Goal: Real-time live data ingestion. Use the UDP Replay Streamer from Phase 3 to drive this.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
@@ -292,7 +351,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 9 — ADS-B & Geographic Boundaries ⬜
+### Phase 11 — ADS-B & Geographic Boundaries ⬜
 *Goal: Aviation-specific data + geographic filtering.*
 
 | ID | Feature | Status | Notes |
@@ -308,7 +367,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 10 — Bar Chart + Aggregation ⬜
+### Phase 12 — Bar Chart + Aggregation ⬜
 *Goal: Aggregated views and bar chart support.*
 
 | ID | Feature | Status | Notes |
@@ -319,7 +378,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 11 — Session Persistence ⬜
+### Phase 13 — Session Persistence ⬜
 *Goal: Save and restore full working sessions.*
 
 | ID | Feature | Status | Notes |
@@ -331,7 +390,7 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 
 ---
 
-### Phase 12 — Undo/Redo + Polish ⬜
+### Phase 14 — Undo/Redo + Polish ⬜
 *Goal: Final quality-of-life features.*
 
 | ID | Feature | Status | Notes |
@@ -352,3 +411,4 @@ Foundation   Load CSV    Map Plot    Filters     Streaming   Polish
 | Date | Phase | Change |
 |---|---|---|
 | 2026-04-04 | — | Initial roadmap created |
+| 2026-04-04 | F0 | Added test data infrastructure phases: ADS-B CSV generator (Phase 2) and UDP replay streamer (Phase 3); existing phases renumbered 4–14 |
