@@ -1,11 +1,15 @@
-Data Vsualizer Application
+DataVisualizer Application
 
 Goal: Production-Quality Engineering Application to display vehicle data on a map, with user extensible plotting. Similar to Tableau, but for live/replay vehicle test data.
 
+Tech Stack: Rust + egui/eframe (GUI) + polars (data engine) + walkers (maps) + egui_plot (charts) + crossbeam-channel (threading) + rfd (file dialogs) + serde/zip (session persistence)
+
 Design documentation in docs/ folder.
 - High Level Product Requirements: docs/requirements.md
-- System Design Decisions: docs/architecture.md
-- Priority-ordered Features: docs/roadmap.md
+- System Design & Architecture:    docs/architecture.md
+- Priority-ordered Feature Roadmap: docs/roadmap.md
+
+Current Build Phase: Not yet started — Phase 1 (Foundation) is next.
 
 
 Behavior Requirements:
