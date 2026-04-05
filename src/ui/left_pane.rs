@@ -1,5 +1,6 @@
 use crate::app::PaneAction;
 use crate::data::schema::FieldKind;
+use crate::plot::plot_config::PlotConfig;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use crate::ui::add_plot_dialog::AddPlotDialog;
@@ -105,11 +106,11 @@ impl LeftPane {
 
                 ui.add_space(4.0);
 
-                // ── ADD PLOT section ──────────────────────────────────────────
+                // ── PLOTS section ─────────────────────────────────────────────
                 collapsible_section(
                     ui,
                     theme,
-                    "ADD PLOT",
+                    "PLOTS",
                     &mut self.section_plots_open,
                     |ui| {
                         ui.add_space(4.0);
@@ -138,14 +139,30 @@ impl LeftPane {
                             );
                         }
 
-                        // Show plot count when plots exist
-                        if !state.plots.is_empty() {
+                        // ── Plot cards ────────────────────────────────────────
+                        if state.plots.is_empty() && state.has_sources() {
                             ui.add_space(4.0);
                             ui.label(
-                                RichText::new(format!("{} plot(s) active", state.plots.len()))
-                                    .color(c.accent_secondary)
-                                    .size(s.font_small),
+                                RichText::new("No plots yet.")
+                                    .color(c.text_secondary)
+                                    .size(s.font_small)
+                                    .italics(),
                             );
+                        }
+
+                        for plot_config in &state.plots {
+                            ui.add_space(4.0);
+                            let source_label = match plot_config {
+                                PlotConfig::Map(cfg) => state
+                                    .sources
+                                    .iter()
+                                    .find(|s| s.id == cfg.source_id)
+                                    .map(|s| s.label.as_str())
+                                    .unwrap_or("(removed)"),
+                            };
+                            if let Some(remove_id) = plot_card(ui, theme, plot_config, source_label) {
+                                action = Some(PaneAction::RemovePlot(remove_id));
+                            }
                         }
 
                         ui.add_space(6.0);
@@ -374,6 +391,62 @@ fn source_card(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Plot card ─────────────────────────────────────────────────────────────────
+
+/// Returns `Some(plot_id)` if the Remove button was clicked.
+fn plot_card(
+    ui: &mut Ui,
+    theme: &AppTheme,
+    config: &PlotConfig,
+    source_label: &str,
+) -> Option<usize> {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    let mut remove_id = None;
+
+    egui::Frame::default()
+        .fill(c.bg_app)
+        .stroke(egui::Stroke::new(1.0, c.border))
+        .corner_radius(s.rounding)
+        .inner_margin(egui::Margin::from(8.0_f32))
+        .show(ui, |ui| {
+            // Header: icon + title
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("◈").color(c.accent_primary).size(s.font_small));
+                ui.label(
+                    RichText::new(config.title())
+                        .color(c.text_primary)
+                        .size(s.font_body)
+                        .strong(),
+                );
+            });
+
+            // Subtitle: plot type + source
+            let type_label = match config {
+                PlotConfig::Map(_) => "Map",
+            };
+            ui.label(
+                RichText::new(format!("{type_label}  ·  {source_label}"))
+                    .color(c.text_secondary)
+                    .size(s.font_small),
+            );
+
+            ui.add_space(4.0);
+
+            // Remove button
+            if ui
+                .add(egui::Button::new(
+                    RichText::new("Remove").color(c.accent_warning).size(s.font_small),
+                ).min_size(egui::vec2(ui.available_width(), 0.0)))
+                .clicked()
+            {
+                remove_id = Some(config.id());
+            }
+        });
+
+    remove_id
+}
 
 fn field_icon_color(kind: &FieldKind, theme: &AppTheme) -> egui::Color32 {
     let c = &theme.colors;

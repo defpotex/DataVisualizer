@@ -1,23 +1,45 @@
 use crate::plot::plot_config::MapPlotConfig;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
-use crate::ui::plot_grid::PlotGrid;
-use egui::{Align, Layout, RichText, Ui};
+use crate::ui::plot_grid::PlotManager;
+use egui::{Align, Context, Layout, RichText, Ui};
 
 #[derive(Default)]
 pub struct PlotArea {
-    plot_grid: PlotGrid,
+    plot_manager: PlotManager,
 }
 
 impl PlotArea {
     /// Add a new map plot (called by app after the dialog completes).
     pub fn add_map_plot(&mut self, config: MapPlotConfig, state: &AppState) {
-        self.plot_grid.add_map_plot(config, state);
+        self.plot_manager.add_map_plot(config, state);
     }
 
+    /// Remove a plot by ID (called when user clicks Remove in the left pane).
+    pub fn remove_plot(&mut self, id: usize) {
+        self.plot_manager.remove_plot(id);
+    }
+
+    /// Remove all plots that reference the given source (called on source removal).
+    pub fn remove_plots_for_source(&mut self, source_id: usize) {
+        self.plot_manager.remove_plots_for_source(source_id);
+    }
+
+    /// (id, title) pairs for left-pane plot cards.
+    pub fn plot_summaries(&self) -> Vec<(usize, String)> {
+        self.plot_manager.plot_ids_and_titles()
+    }
+
+    /// Draw floating plot windows. Must be called BEFORE panels so windows can overlay them.
+    /// Returns IDs of plots the user closed via the window X button.
+    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme) -> Vec<usize> {
+        self.plot_manager.show_windows(ctx, theme)
+    }
+
+    /// Draw the central panel background / empty state hint.
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState) {
-        if !self.plot_grid.is_empty() {
-            self.plot_grid.show(ui, theme);
+        if !self.plot_manager.is_empty() {
+            self.show_has_plots(ui, theme);
         } else if state.has_sources() {
             self.show_has_sources(ui, theme, state);
         } else {
@@ -27,7 +49,7 @@ impl PlotArea {
 
     // ── No sources loaded ─────────────────────────────────────────────────────
 
-    fn show_empty(&mut self, ui: &mut Ui, theme: &AppTheme) {
+    fn show_empty(&self, ui: &mut Ui, theme: &AppTheme) {
         let c = &theme.colors;
         let s = &theme.spacing;
         let panel_width = ui.available_width();
@@ -56,7 +78,6 @@ impl PlotArea {
             );
             ui.add_space(24.0);
 
-            // Three quick-hint cards, centered as a group
             let group_width = 388.0_f32;
             let offset = (panel_width - group_width).max(0.0) / 2.0;
             ui.horizontal(|ui| {
@@ -72,7 +93,7 @@ impl PlotArea {
 
     // ── Sources loaded, no plots yet ──────────────────────────────────────────
 
-    fn show_has_sources(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState) {
+    fn show_has_sources(&self, ui: &mut Ui, theme: &AppTheme, state: &AppState) {
         let c = &theme.colors;
         let s = &theme.spacing;
 
@@ -101,6 +122,30 @@ impl PlotArea {
                 RichText::new("Use  Add Plot  in the left panel to create a visualization.")
                     .color(c.text_secondary)
                     .size(s.font_body),
+            );
+        });
+    }
+
+    // ── Plots are open as floating windows ────────────────────────────────────
+
+    fn show_has_plots(&self, ui: &mut Ui, theme: &AppTheme) {
+        let c = &theme.colors;
+        let s = &theme.spacing;
+
+        ui.add_space(ui.available_height() * 0.35);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new(format!("{} plot window{} open", self.plot_manager.len(),
+                    if self.plot_manager.len() == 1 { "" } else { "s" }))
+                    .color(c.text_secondary)
+                    .size(s.font_small)
+                    .italics(),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Drag windows to reposition · Resize from edges")
+                    .color(c.text_secondary)
+                    .size(s.font_small),
             );
         });
     }
@@ -139,9 +184,7 @@ fn format_count(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
+        if i > 0 && i % 3 == 0 { result.push(','); }
         result.push(ch);
     }
     result.chars().rev().collect()

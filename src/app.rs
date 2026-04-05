@@ -114,6 +114,12 @@ impl eframe::App for DataVisualizerApp {
         // Clone theme so closures can borrow self mutably without conflict.
         let theme = self.theme.clone();
 
+        // ── Floating plot windows (before panels so they can overlay the central area) ──
+        let closed_plots = self.plot_area.show_windows(ctx, &theme);
+        for id in closed_plots {
+            self.app_state.plots.retain(|p| p.id() != id);
+        }
+
         // Collect actions from panels — handle after all panels are drawn.
         let mut menu_action: Option<MenuAction> = None;
         let mut pane_action: Option<PaneAction> = None;
@@ -170,6 +176,7 @@ pub enum PaneAction {
     OpenCsv,
     RemoveSource(usize),
     AddPlot(crate::plot::plot_config::MapPlotConfig),
+    RemovePlot(usize),
 }
 
 impl DataVisualizerApp {
@@ -182,12 +189,23 @@ impl DataVisualizerApp {
     fn handle_pane_action(&mut self, action: PaneAction) {
         match action {
             PaneAction::OpenCsv => self.open_csv_dialog(),
-            PaneAction::RemoveSource(id) => self.app_state.remove_source(id),
+            PaneAction::RemoveSource(id) => {
+                // Remove plots that reference this source before removing the source.
+                self.plot_area.remove_plots_for_source(id);
+                self.app_state.plots.retain(|p| {
+                    if let crate::plot::plot_config::PlotConfig::Map(c) = p { c.source_id != id } else { true }
+                });
+                self.app_state.remove_source(id);
+            }
             PaneAction::AddPlot(mut config) => {
                 config.id = self.app_state.alloc_plot_id();
                 let plot_config = crate::plot::plot_config::PlotConfig::Map(config.clone());
                 self.app_state.plots.push(plot_config);
                 self.plot_area.add_map_plot(config, &self.app_state);
+            }
+            PaneAction::RemovePlot(id) => {
+                self.plot_area.remove_plot(id);
+                self.app_state.plots.retain(|p| p.id() != id);
             }
         }
     }
