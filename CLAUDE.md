@@ -9,7 +9,7 @@ Design documentation in docs/ folder.
 - System Design & Architecture:    docs/architecture.md
 - Priority-ordered Feature Roadmap: docs/roadmap.md
 
-Current Build Phase: Phase 2 ✅ complete. Phase 3 (UDP Replay Streamer) is next.
+Current Build Phase: Phase 3 ✅ complete. Phase 4 (CSV Data Loading) is next.
 
 
 Behavior Requirements:
