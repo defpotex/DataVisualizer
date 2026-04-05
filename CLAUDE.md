@@ -9,7 +9,7 @@ Design documentation in docs/ folder.
 - System Design & Architecture:    docs/architecture.md
 - Priority-ordered Feature Roadmap: docs/roadmap.md
 
-Current Build Phase: Phase 3 ✅ complete. Phase 4 (CSV Data Loading) is next.
+Current Build Phase: Phase 4 ✅ complete. Phase 5 (Map Plot) is next.
 
 
 Behavior Requirements:

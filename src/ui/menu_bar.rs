@@ -1,3 +1,4 @@
+use crate::app::MenuAction;
 use crate::theme::AppTheme;
 use egui::{menu, Align2, Color32, FontId, RichText, Ui};
 
@@ -5,11 +6,13 @@ use egui::{menu, Align2, Color32, FontId, RichText, Ui};
 pub struct MenuBar;
 
 impl MenuBar {
-    pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme) {
+    /// Returns Some(MenuAction) if the user clicked something requiring app-level handling.
+    pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme) -> Option<MenuAction> {
+        let mut action = None;
+
         ui.horizontal(|ui| {
             ui.add_space(4.0);
 
-            // ── File ──────────────────────────────────────────────────────────
             menu::bar(ui, |ui| {
                 ui.set_style(ui.style().clone());
 
@@ -28,10 +31,13 @@ impl MenuBar {
 
                 menu_item(ui, "Data Sources", theme, |ui| {
                     menu_section_label(ui, "Add Source", theme);
-                    menu_entry(ui, "CSV File…", "", theme);
-                    menu_entry(ui, "Parquet File…", "", theme);
-                    menu_entry(ui, "UDP Stream…", "", theme);
-                    menu_entry(ui, "ADS-B Stream…", "", theme);
+                    if menu_entry(ui, "CSV File…", "", theme) {
+                        action = Some(MenuAction::OpenCsv);
+                        ui.close_menu();
+                    }
+                    menu_entry_disabled(ui, "Parquet File…", "", theme);
+                    menu_entry_disabled(ui, "UDP Stream…", "", theme);
+                    menu_entry_disabled(ui, "ADS-B Stream…", "", theme);
                     ui.separator();
                     menu_entry_disabled(ui, "Manage Sources…", "", theme);
                 });
@@ -55,6 +61,8 @@ impl MenuBar {
                 });
             });
         });
+
+        action
     }
 }
 
@@ -70,7 +78,8 @@ fn menu_item(ui: &mut Ui, label: &str, theme: &AppTheme, contents: impl FnOnce(&
     );
 }
 
-fn menu_entry(ui: &mut Ui, label: &str, shortcut: &str, theme: &AppTheme) {
+/// Returns true if this entry was clicked.
+fn menu_entry(ui: &mut Ui, label: &str, shortcut: &str, theme: &AppTheme) -> bool {
     let c = &theme.colors;
     let s = &theme.spacing;
     let row_height = s.font_body + 10.0;
@@ -103,9 +112,7 @@ fn menu_entry(ui: &mut Ui, label: &str, shortcut: &str, theme: &AppTheme) {
         }
     }
 
-    if response.clicked() {
-        ui.close_menu();
-    }
+    response.clicked()
 }
 
 fn menu_entry_disabled(ui: &mut Ui, label: &str, shortcut: &str, theme: &AppTheme) {
@@ -114,7 +121,7 @@ fn menu_entry_disabled(ui: &mut Ui, label: &str, shortcut: &str, theme: &AppThem
     let row_height = s.font_body + 10.0;
     let width = ui.available_width().max(200.0);
 
-    let (rect, _response) = ui.allocate_exact_size(
+    let (rect, _) = ui.allocate_exact_size(
         egui::vec2(width, row_height),
         egui::Sense::hover(),
     );
@@ -147,7 +154,6 @@ fn menu_section_label(ui: &mut Ui, label: &str, theme: &AppTheme) {
     );
 }
 
-/// Dim a color by blending toward black — used for disabled items.
 fn dimmed(c: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)
 }
