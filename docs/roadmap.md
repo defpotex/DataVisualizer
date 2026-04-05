@@ -240,17 +240,17 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 
 ---
 
-### Phase 4 — CSV Data Loading ⬜
+### Phase 4 — CSV Data Loading ✅
 *Goal: Load a CSV, see data in the source panel, inspect fields. Uses the dataset from Phase 2.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F2.1 | CSV loading (file dialog) | ⬜ | `rfd` + `polars` |
-| F2.1.1 | Schema auto-detection | ⬜ | Lat/lon/time field heuristics |
-| F2.1.2 | Multi-file loading | ⬜ | Load multiple sources |
-| F2.3 | Data source panel | ⬜ | Left pane: list sources, row count, fields |
+| F2.1 | CSV loading (file dialog) | ✅ | `rfd` file dialog + polars lazy reader on background thread |
+| F2.1.1 | Schema auto-detection | ✅ | Heuristics for lat/lon/timestamp/altitude/speed/heading by name+dtype |
+| F2.1.2 | Multi-file loading | ✅ | Each load gets a unique SourceId; all shown in left pane |
+| F2.3 | Data source panel | ✅ | Row count, field list with icons, collapsible, Remove button |
 
-**Exit criteria:** User opens a CSV, it appears in the left pane with field list and row count.
+**Exit criteria:** User opens a CSV, it appears in the left pane with field list and row count. ✅
 
 ---
 
@@ -411,3 +411,4 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 | 2026-04-04 | Phase 1 | Foundation complete: workspace scaffold, eframe window, 3-panel layout, Engineering Dark theme, persistent window geometry |
 | 2026-04-04 | Phase 2 | ADS-B CSV generator complete: OpenSky polling, CSV+Parquet output, Ctrl+C shutdown, meta.json sidecar |
 | 2026-04-05 | Phase 3 | UDP replay streamer complete: timestamp-ordered delivery, speed multiplier, loop mode, header flag, Ctrl+C |
+| 2026-04-05 | Phase 4 | CSV data loading: background thread, schema heuristics, source panel with field list, multi-file, remove |

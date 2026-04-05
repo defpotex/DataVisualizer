@@ -1,3 +1,5 @@
+use crate::data::loader::load_csv_async;
+use crate::state::app_state::AppState;
 use crate::theme::{AppTheme, ThemePreset};
 use crate::ui::{left_pane::LeftPane, menu_bar::MenuBar, plot_area::PlotArea};
 use eframe::Storage;
@@ -6,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 const STORAGE_KEY: &str = "datavisualizer_app_state";
 
-// ── Persistent state (saved across restarts) ──────────────────────────────────
+// ── Persistent state ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
 struct PersistentState {
@@ -30,6 +32,8 @@ pub struct DataVisualizerApp {
     theme: AppTheme,
     left_pane_width: f32,
 
+    app_state: AppState,
+
     menu_bar: MenuBar,
     left_pane: LeftPane,
     plot_area: PlotArea,
@@ -37,8 +41,6 @@ pub struct DataVisualizerApp {
 
 impl DataVisualizerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Load persistent state (window geometry is handled by eframe automatically
-        // via `persist_window: true`; we handle our own UI state here).
         let persisted: PersistentState = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE_KEY))
@@ -46,16 +48,15 @@ impl DataVisualizerApp {
 
         let theme = AppTheme::from_preset(persisted.theme_preset);
 
-        // Apply theme to egui style immediately so first frame is correct.
         let mut style = (*cc.egui_ctx.style()).clone();
         theme.apply_to_style(&mut style);
         cc.egui_ctx.set_style(style);
 
-        // Load embedded JetBrains Mono for monospace data values.
         setup_fonts(&cc.egui_ctx);
 
         Self {
             left_pane_width: persisted.left_pane_width,
+            app_state: AppState::default(),
             menu_bar: MenuBar::default(),
             left_pane: LeftPane::default(),
             plot_area: PlotArea::default(),
@@ -63,8 +64,6 @@ impl DataVisualizerApp {
         }
     }
 
-    /// Switch to a new theme preset at runtime.
-    /// Called from menus in a future phase.
     #[allow(dead_code)]
     pub fn apply_theme(&mut self, preset: ThemePreset, ctx: &Context) {
         self.theme = AppTheme::from_preset(preset);
@@ -72,49 +71,78 @@ impl DataVisualizerApp {
         self.theme.apply_to_style(&mut style);
         ctx.set_style(style);
     }
+
+    /// Open a native file dialog and kick off an async CSV load.
+    fn open_csv_dialog(&mut self) {
+        let id = self.app_state.next_source_id();
+        let tx = self.app_state.event_tx.clone();
+
+        // rfd file dialog — runs on a background thread so the UI stays live.
+        std::thread::spawn(move || {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("CSV files", &["csv"])
+                .add_filter("All files", &["*"])
+                .pick_file()
+            {
+                load_csv_async(id, path, tx);
+            }
+        });
+    }
 }
 
 impl eframe::App for DataVisualizerApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Re-apply theme every frame. egui Styles are stored in an Arc so this
-        // is a cheap pointer swap, not a deep copy. Doing it here guarantees
-        // popup/menu windows (which open in a new egui pass) always inherit
-        // our visuals rather than any defaults eframe may reset between frames.
+        // Re-apply theme every frame so popups/menus always use our visuals.
         {
             let mut style = (*ctx.style()).clone();
             self.theme.apply_to_style(&mut style);
             ctx.set_style(style);
         }
 
-        let theme = &self.theme;
+        // Drain background-thread events (new sources, errors).
+        self.app_state.poll_events();
 
-        // ── Top menu bar ──────────────────────────────────────────────────────
+        // If a load just finished, request a repaint so the UI updates immediately.
+        if self.app_state.has_sources() {
+            ctx.request_repaint();
+        }
+
+        // Clone theme so closures can borrow self mutably without conflict.
+        let theme = self.theme.clone();
+
+        // Collect actions from panels — handle after all panels are drawn.
+        let mut menu_action: Option<MenuAction> = None;
+        let mut pane_action: Option<PaneAction> = None;
+
+        // ── Menu bar ──────────────────────────────────────────────────────────
         egui::TopBottomPanel::top("menu_bar")
-            .frame(menu_bar_frame(theme))
+            .frame(menu_bar_frame(&theme))
             .show(ctx, |ui| {
-                self.menu_bar.show(ui, theme);
+                menu_action = self.menu_bar.show(ui, &theme);
             });
 
-        // ── Left side pane with drag-to-resize ───────────────────────────────
-        let pane_width = self.left_pane_width;
+        // ── Left pane ─────────────────────────────────────────────────────────
         egui::SidePanel::left("left_pane")
             .resizable(true)
-            .default_width(pane_width)
+            .default_width(self.left_pane_width)
             .min_width(theme.spacing.left_pane_min_width)
             .max_width(theme.spacing.left_pane_max_width)
-            .frame(side_panel_frame(theme))
+            .frame(side_panel_frame(&theme))
             .show(ctx, |ui| {
-                // Track width changes so we can persist them
                 self.left_pane_width = ui.available_width() + ui.spacing().item_spacing.x;
-                self.left_pane.show(ui, theme);
+                pane_action = self.left_pane.show(ui, &theme, &self.app_state);
             });
 
-        // ── Main plot area ────────────────────────────────────────────────────
+        // ── Plot area ─────────────────────────────────────────────────────────
         egui::CentralPanel::default()
-            .frame(plot_area_frame(theme))
+            .frame(plot_area_frame(&theme))
             .show(ctx, |ui| {
-                self.plot_area.show(ui, theme);
+                self.plot_area.show(ui, &theme, &self.app_state);
             });
+
+        // Handle actions after all panels are drawn (avoids borrow conflicts)
+        if let Some(a) = menu_action { self.handle_menu_action(a); }
+        if let Some(a) = pane_action { self.handle_pane_action(a); }
     }
 
     fn save(&mut self, storage: &mut dyn Storage) {
@@ -126,7 +154,35 @@ impl eframe::App for DataVisualizerApp {
     }
 }
 
-// ── Frame builders — use theme colors so all chrome stays in sync ─────────────
+// ── Action handling ───────────────────────────────────────────────────────────
+
+/// Actions returned from the menu bar that require app-level handling.
+pub enum MenuAction {
+    OpenCsv,
+}
+
+/// Actions returned from the left pane.
+pub enum PaneAction {
+    OpenCsv,
+    RemoveSource(usize),
+}
+
+impl DataVisualizerApp {
+    fn handle_menu_action(&mut self, action: MenuAction) {
+        match action {
+            MenuAction::OpenCsv => self.open_csv_dialog(),
+        }
+    }
+
+    fn handle_pane_action(&mut self, action: PaneAction) {
+        match action {
+            PaneAction::OpenCsv => self.open_csv_dialog(),
+            PaneAction::RemoveSource(id) => self.app_state.remove_source(id),
+        }
+    }
+}
+
+// ── Frame builders ────────────────────────────────────────────────────────────
 
 fn menu_bar_frame(theme: &AppTheme) -> egui::Frame {
     egui::Frame {
@@ -154,19 +210,14 @@ fn plot_area_frame(theme: &AppTheme) -> egui::Frame {
     }
 }
 
-// ── Font setup ────────────────────────────────────────────────────────────────
+// ── Fonts ─────────────────────────────────────────────────────────────────────
 
 fn setup_fonts(ctx: &Context) {
     let mut fonts = egui::FontDefinitions::default();
-
-    // egui ships with its own monospace font (Hack). We alias it here so
-    // future phases can swap in JetBrains Mono by adding the bytes and
-    // changing the font name — one place, zero ripple.
     fonts
         .families
         .entry(egui::FontFamily::Monospace)
         .or_default()
         .insert(0, "Hack".to_owned());
-
     ctx.set_fonts(fonts);
 }
