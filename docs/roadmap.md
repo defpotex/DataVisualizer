@@ -189,18 +189,19 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 
 ---
 
-### Phase 1 — Foundation ⬜
+### Phase 1 — Foundation ✅
 *Goal: Running app with correct layout. No data yet.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F1.1 | Rust project scaffold | ⬜ | `Cargo.toml`, deps, workspace |
-| F1.2 | eframe window | ⬜ | Title, icon, min size |
-| F1.3 | Three-panel layout | ⬜ | Menu bar + left pane + plot area |
-| F1.4 | Panel resize | ⬜ | Left pane drag handle |
-| F1.5 | Window geometry persistence | ⬜ | Save/restore on exit |
+| F1.1 | Rust project scaffold | ✅ | `Cargo.toml`, workspace (app + 2 tool stubs) |
+| F1.2 | eframe window | ✅ | Title, programmatic diamond icon, min size 800×500 |
+| F1.3 | Three-panel layout | ✅ | Menu bar + resizable left pane + plot area |
+| F1.4 | Panel resize | ✅ | egui SidePanel resizable, min/max from theme |
+| F1.5 | Window geometry persistence | ✅ | `persist_window: true` + custom pane width via eframe Storage |
+| — | Engineering Dark theme | ✅ | `AppTheme` / `ThemePreset` — all colors & spacing centralized |
 
-**Exit criteria:** App launches, shows correct layout, left pane can be resized, window size/pos restored on relaunch.
+**Exit criteria:** App launches, shows correct layout, left pane can be resized, window size/pos restored on relaunch. ✅
 
 ---
 
@@ -412,3 +413,4 @@ cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 127.0.0.1:
 |---|---|---|
 | 2026-04-04 | — | Initial roadmap created |
 | 2026-04-04 | F0 | Added test data infrastructure phases: ADS-B CSV generator (Phase 2) and UDP replay streamer (Phase 3); existing phases renumbered 4–14 |
+| 2026-04-04 | Phase 1 | Foundation complete: workspace scaffold, eframe window, 3-panel layout, Engineering Dark theme, persistent window geometry |

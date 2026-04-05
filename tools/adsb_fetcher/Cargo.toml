@@ -1,0 +1,12 @@
+[package]
+name = "adsb_fetcher"
+version = "0.1.0"
+edition = "2021"
+description = "Fetch live ADS-B state vectors from OpenSky Network and write to CSV/Parquet"
+
+[[bin]]
+name = "adsb_fetcher"
+path = "src/main.rs"
+
+[dependencies]
+# Phase 2 — dependencies added when implemented
