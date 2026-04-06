@@ -75,15 +75,13 @@ fn try_apply(df: DataFrame, f: &Filter) -> Option<DataFrame> {
         let col_series = df.column(&f.column).ok()?.as_series()?.clone();
         let cast = col_series.cast(&DataType::Float64).ok()?;
         let ca = cast.f64().ok()?;
-        let val_s = Series::new("v".into(), &[val]);
         match f.op {
-            FilterOp::Eq    => ca.equal(val).ok()?.into_series(),
-            FilterOp::NotEq => ca.not_equal(val).ok()?.into_series(),
-            FilterOp::Gt    => ca.gt(val).ok()?.into_series(),
-            FilterOp::GtEq  => ca.gt_eq(val).ok()?.into_series(),
-            FilterOp::Lt    => ca.lt(val).ok()?.into_series(),
-            FilterOp::LtEq  => ca.lt_eq(val).ok()?.into_series(),
-            _ => { let _ = val_s; return None; }
+            FilterOp::Eq    => ca.equal(val).into_series(),
+            FilterOp::NotEq => ca.not_equal(val).into_series(),
+            FilterOp::Gt    => ca.gt(val).into_series(),
+            FilterOp::GtEq  => ca.gt_eq(val).into_series(),
+            FilterOp::Lt    => ca.lt(val).into_series(),
+            FilterOp::LtEq  => ca.lt_eq(val).into_series(),
         }
     } else {
         // String equality only for non-numeric values.

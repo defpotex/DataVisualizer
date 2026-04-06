@@ -169,7 +169,6 @@ fn show_scatter(
     max_draw_points: usize,
 ) {
     let c = &theme.colors;
-    let s = &theme.spacing;
 
     let n = points.len();
     let step = if max_draw_points > 0 { (n / max_draw_points).max(1) } else { 1 };
@@ -193,31 +192,21 @@ fn show_scatter(
         .radius(2.5)
         .shape(egui_plot::MarkerShape::Circle);
 
-    // Style the plot frame to match the dark theme.
-    let plot_bg = c.bg_plot;
-    let grid_color = Color32::from_rgba_unmultiplied(
-        c.border.r(), c.border.g(), c.border.b(), 120,
-    );
-
     Plot::new(egui::Id::new(("scatter", config.id)))
-        .x_axis_label(RichText::new(&config.x_col).color(c.text_secondary).size(s.font_small))
-        .y_axis_label(RichText::new(&config.y_col).color(c.text_secondary).size(s.font_small))
+        .x_axis_label(&config.x_col as &str)
+        .y_axis_label(&config.y_col as &str)
         .set_margin_fraction(egui::vec2(0.05, 0.05))
         .allow_zoom(true)
         .allow_drag(true)
         .allow_scroll(true)
         .allow_boxed_zoom(true)
         .auto_bounds(egui::Vec2b::new(true, true))
-        .background_color(plot_bg)
         .x_grid_spacer(egui_plot::log_grid_spacer(10))
         .y_grid_spacer(egui_plot::log_grid_spacer(10))
-        .x_axis_color(c.text_secondary)
-        .y_axis_color(c.text_secondary)
-        .grid_stroke(egui::Stroke::new(0.5, grid_color))
         .label_formatter(move |_name, val| {
             format!("x: {:.4}\ny: {:.4}", val.x, val.y)
         })
-        .show(ui, |plot_ui| {
+        .show(ui, |plot_ui: &mut egui_plot::PlotUi| {
             plot_ui.points(scatter_points);
         });
 }

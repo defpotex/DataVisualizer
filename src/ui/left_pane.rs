@@ -5,7 +5,7 @@ use crate::plot::plot_config::PlotConfig;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use crate::ui::add_filter_dialog::AddFilterDialog;
-use crate::ui::add_plot_dialog::{AddPlotDialog, NewPlotConfig};
+use crate::ui::add_plot_dialog::AddPlotDialog;
 use egui::{RichText, Ui};
 
 pub struct LeftPane {
