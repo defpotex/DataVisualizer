@@ -129,7 +129,7 @@ impl eframe::App for DataVisualizerApp {
         egui::Panel::top("menu_bar")
             .frame(menu_bar_frame(&theme))
             .show(ctx, |ui| {
-                menu_action = self.menu_bar.show(ui, &theme);
+                menu_action = self.menu_bar.show(ui, &theme, &mut self.app_state.perf);
             });
 
         // ── Left pane ─────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ impl eframe::App for DataVisualizerApp {
 
         // ── Floating plot windows (drawn after panels so constrain_to works) ──
         // Windows float above panel contents but are bounded to the central rect.
-        let closed_plots = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE);
+        let closed_plots = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, self.app_state.perf.max_draw_points);
         for id in closed_plots {
             self.app_state.plots.retain(|p| p.id() != id);
         }

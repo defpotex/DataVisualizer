@@ -57,10 +57,10 @@ impl PlotManager {
 
     /// Draw all plots as floating egui Windows constrained to `central_rect`.
     /// Returns IDs of any windows the user closed.
-    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32) -> Vec<usize> {
+    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, max_draw_points: usize) -> Vec<usize> {
         let mut closed = Vec::new();
         for plot in &mut self.plots {
-            if !plot.show_as_window(ctx, theme, central_rect, grid_size) {
+            if !plot.show_as_window(ctx, theme, central_rect, grid_size, max_draw_points) {
                 closed.push(plot.plot_id());
             }
         }

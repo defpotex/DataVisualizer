@@ -98,6 +98,7 @@ impl MapPlot {
         theme: &AppTheme,
         central_rect: Rect,
         grid_size: f32,
+        max_draw_points: usize,
     ) -> bool {
         if !self.is_open {
             return false;
@@ -155,6 +156,7 @@ impl MapPlot {
                     &self.config,
                     Arc::clone(&self.points),
                     theme,
+                    max_draw_points,
                 );
             });
         });
@@ -227,6 +229,7 @@ fn show_map(
     config: &MapPlotConfig,
     points: Arc<Vec<[f64; 2]>>,
     theme: &AppTheme,
+    max_draw_points: usize,
 ) {
     if tiles.is_none() {
         *tiles = Some(make_tiles(&config.tile_scheme, ui.ctx().clone()));
@@ -238,7 +241,7 @@ fn show_map(
 
     ui.add(
         Map::new(Some(tile_ref), map_memory, center)
-            .with_plugin(PointsPlugin { points, color: accent }),
+            .with_plugin(PointsPlugin { points, color: accent, max_draw_points }),
     );
 }
 
@@ -248,11 +251,11 @@ struct PointsPlugin {
     /// Arc clone — O(1), no data copy.
     points: Arc<Vec<[f64; 2]>>,
     color: Color32,
+    max_draw_points: usize,
 }
 
-/// Maximum points rendered per frame regardless of dataset size.
-/// Above this threshold we subsample evenly so draw-call cost is bounded.
-const MAX_DRAW_POINTS: usize = 8_000;
+/// Half-size of each rendered point quad in screen pixels.
+const POINT_RADIUS: f32 = 3.0;
 
 impl walkers::Plugin for PointsPlugin {
     fn run(
@@ -262,21 +265,50 @@ impl walkers::Plugin for PointsPlugin {
         projector: &Projector,
         _map_memory: &MapMemory,
     ) {
-        let painter = ui.painter().with_clip_rect(response.rect);
         let n = self.points.len();
         if n == 0 { return; }
 
-        // Adaptive stride: draw every Nth point so we never exceed MAX_DRAW_POINTS.
-        let step = (n / MAX_DRAW_POINTS).max(1);
-
+        // Adaptive stride so we never exceed max_draw_points.
+        let step = (n / self.max_draw_points).max(1);
         let rect = response.rect;
+        let expanded = rect.expand(POINT_RADIUS);
+        let r = POINT_RADIUS;
+        let color = self.color;
+
+        // Build a single GPU mesh — one draw call for all visible points.
+        // Each point is a quad (2 triangles), all batched into one Mesh.
+        let uv = egui::epaint::WHITE_UV;
+        let mut mesh = egui::Mesh::default();
+
+        // Pre-allocate: estimate visible fraction as 1 (worst case all visible).
+        let cap = (n / step).min(self.max_draw_points);
+        mesh.vertices.reserve(cap * 4);
+        mesh.indices.reserve(cap * 6);
+
         for [lat, lon] in self.points.iter().step_by(step) {
             let pos = walkers::lat_lon(*lat, *lon);
             let v = projector.project(pos);
-            let screen = Pos2::new(v.x, v.y);
-            // Skip points outside the visible rect (viewport culling).
-            if !rect.contains(screen) { continue; }
-            painter.circle_filled(screen, 3.0, self.color);
+            let center = Pos2::new(v.x, v.y);
+
+            // Viewport cull — skip points outside the visible map rect.
+            if !expanded.contains(center) { continue; }
+
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.extend_from_slice(&[
+                egui::epaint::Vertex { pos: center + vec2(-r, -r), uv, color },
+                egui::epaint::Vertex { pos: center + vec2( r, -r), uv, color },
+                egui::epaint::Vertex { pos: center + vec2( r,  r), uv, color },
+                egui::epaint::Vertex { pos: center + vec2(-r,  r), uv, color },
+            ]);
+            mesh.indices.extend_from_slice(&[
+                base, base + 1, base + 2,
+                base, base + 2, base + 3,
+            ]);
+        }
+
+        if !mesh.is_empty() {
+            let painter = ui.painter().with_clip_rect(rect);
+            painter.add(egui::Shape::mesh(mesh));
         }
     }
 }

@@ -1,5 +1,6 @@
 use crate::data::source::{DataSource, SourceId};
 use crate::plot::plot_config::PlotConfig;
+use crate::state::perf_settings::PerformanceSettings;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 /// Events sent from background threads to the UI thread.
@@ -31,6 +32,9 @@ pub struct AppState {
 
     /// Non-fatal messages shown in the UI (e.g. load errors).
     pub notifications: Vec<String>,
+
+    /// User-tunable performance settings.
+    pub perf: PerformanceSettings,
 }
 
 impl Default for AppState {
@@ -44,6 +48,7 @@ impl Default for AppState {
             event_tx: tx,
             event_rx: rx,
             notifications: Vec::new(),
+            perf: PerformanceSettings::default(),
         }
     }
 }

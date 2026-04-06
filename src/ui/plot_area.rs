@@ -32,8 +32,8 @@ impl PlotArea {
 
     /// Draw floating plot windows constrained to the central panel rect.
     /// Returns IDs of plots the user closed via the window X button.
-    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme, central_rect: egui::Rect, grid_size: f32) -> Vec<usize> {
-        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size)
+    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme, central_rect: egui::Rect, grid_size: f32, max_draw_points: usize) -> Vec<usize> {
+        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, max_draw_points)
     }
 
     /// Draw the central panel background / empty state hint.

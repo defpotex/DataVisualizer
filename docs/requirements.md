@@ -109,3 +109,9 @@ Vehicle Track/Telemetry Visualization Application
 
 - **Main Pane Status Bar"** Add a status bar at the bottom of the main window with some stats
 - **Rename Plot ID/Titles** Add option to reneame plot Titles to window or in left pane card
+
+
+
+## Bugs to fix
+- Cant see slider in the Performance dropdown
+- Fix window stacking/performance

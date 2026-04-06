@@ -1,4 +1,5 @@
 use crate::app::MenuAction;
+use crate::state::perf_settings::PerformanceSettings;
 use crate::theme::AppTheme;
 use egui::{menu, Align2, Color32, FontId, RichText, Ui};
 
@@ -7,15 +8,13 @@ pub struct MenuBar;
 
 impl MenuBar {
     /// Returns Some(MenuAction) if the user clicked something requiring app-level handling.
-    pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme) -> Option<MenuAction> {
+    pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, perf: &mut PerformanceSettings) -> Option<MenuAction> {
         let mut action = None;
 
         ui.horizontal(|ui| {
             ui.add_space(4.0);
 
             menu::bar(ui, |ui| {
-                // (no-op; egui 0.34 inherits style automatically)
-
                 menu_item(ui, "File", theme, |ui| {
                     menu_entry(ui, "New Session", "Ctrl+N", theme);
                     menu_entry(ui, "Open Session…", "Ctrl+O", theme);
@@ -49,8 +48,7 @@ impl MenuBar {
                 });
 
                 menu_item(ui, "Performance", theme, |ui| {
-                    menu_entry_disabled(ui, "Memory Usage…", "", theme);
-                    menu_entry_disabled(ui, "Cancel Operation", "Esc", theme);
+                    perf_settings_ui(ui, perf, theme);
                 });
 
                 menu_item(ui, "Help", theme, |ui| {
@@ -64,6 +62,60 @@ impl MenuBar {
 
         action
     }
+}
+
+// ── Performance settings popup ────────────────────────────────────────────────
+
+fn perf_settings_ui(ui: &mut Ui, perf: &mut PerformanceSettings, theme: &AppTheme) {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+
+    ui.set_min_width(260.0);
+    ui.add_space(4.0);
+
+    // Section header
+    ui.label(
+        RichText::new("RENDER SETTINGS")
+            .color(c.text_secondary)
+            .size(s.font_small),
+    );
+    ui.add_space(6.0);
+
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Max Points / Plot")
+                .color(c.text_primary)
+                .size(s.font_body),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add(
+                egui::DragValue::new(&mut perf.max_draw_points)
+                    .range(1_000..=2_000_000)
+                    .speed(1_000.0)
+                    .suffix(" pts"),
+            );
+        });
+    });
+
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new("Drag or click to edit. Points are stride-\nsampled when dataset exceeds this limit.")
+            .color(c.text_secondary)
+            .size(s.font_small),
+    );
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    // Read-only info row
+    let rendered = perf.max_draw_points;
+    ui.label(
+        RichText::new(format!("GPU quad batching active  ·  {} max", format_k(rendered)))
+            .color(c.accent_secondary)
+            .size(s.font_small),
+    );
+    ui.add_space(4.0);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -156,4 +208,10 @@ fn menu_section_label(ui: &mut Ui, label: &str, theme: &AppTheme) {
 
 fn dimmed(c: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)
+}
+
+fn format_k(n: usize) -> String {
+    if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1_000_000.0) }
+    else if n >= 1_000 { format!("{:.0}K", n as f64 / 1_000.0) }
+    else { n.to_string() }
 }
