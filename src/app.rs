@@ -186,8 +186,11 @@ pub enum MenuAction {
 pub enum PaneAction {
     OpenCsv,
     RemoveSource(usize),
-    AddPlot(crate::plot::plot_config::MapPlotConfig),
+    AddPlot(crate::ui::add_plot_dialog::NewPlotConfig),
     RemovePlot(usize),
+    AddFilter(crate::data::filter::Filter),
+    RemoveFilter(usize),
+    ToggleFilter(usize),
 }
 
 impl DataVisualizerApp {
@@ -198,25 +201,53 @@ impl DataVisualizerApp {
     }
 
     fn handle_pane_action(&mut self, action: PaneAction) {
+        use crate::plot::plot_config::PlotConfig;
+        use crate::ui::add_plot_dialog::NewPlotConfig;
         match action {
             PaneAction::OpenCsv => self.open_csv_dialog(),
+
             PaneAction::RemoveSource(id) => {
-                // Remove plots that reference this source before removing the source.
                 self.plot_area.remove_plots_for_source(id);
-                self.app_state.plots.retain(|p| {
-                    if let crate::plot::plot_config::PlotConfig::Map(c) = p { c.source_id != id } else { true }
-                });
+                self.app_state.plots.retain(|p| p.source_id() != id);
                 self.app_state.remove_source(id);
             }
-            PaneAction::AddPlot(mut config) => {
-                config.id = self.app_state.alloc_plot_id();
-                let plot_config = crate::plot::plot_config::PlotConfig::Map(config.clone());
-                self.app_state.plots.push(plot_config);
-                self.plot_area.add_map_plot(config, &self.app_state, self.central_rect);
+
+            PaneAction::AddPlot(new_config) => {
+                match new_config {
+                    NewPlotConfig::Map(mut config) => {
+                        config.id = self.app_state.alloc_plot_id();
+                        self.app_state.plots.push(PlotConfig::Map(config.clone()));
+                        self.plot_area.add_map_plot(config, &self.app_state, self.central_rect);
+                    }
+                    NewPlotConfig::Scatter(mut config) => {
+                        config.id = self.app_state.alloc_plot_id();
+                        self.app_state.plots.push(PlotConfig::Scatter(config.clone()));
+                        self.plot_area.add_scatter_plot(config, &self.app_state, self.central_rect);
+                    }
+                }
             }
+
             PaneAction::RemovePlot(id) => {
                 self.plot_area.remove_plot(id);
                 self.app_state.plots.retain(|p| p.id() != id);
+            }
+
+            PaneAction::AddFilter(mut filter) => {
+                filter.id = self.app_state.alloc_filter_id();
+                self.app_state.filters.push(filter);
+                self.plot_area.sync_all_filters(&self.app_state);
+            }
+
+            PaneAction::RemoveFilter(id) => {
+                self.app_state.filters.retain(|f| f.id != id);
+                self.plot_area.sync_all_filters(&self.app_state);
+            }
+
+            PaneAction::ToggleFilter(id) => {
+                if let Some(f) = self.app_state.filters.iter_mut().find(|f| f.id == id) {
+                    f.enabled = !f.enabled;
+                }
+                self.plot_area.sync_all_filters(&self.app_state);
             }
         }
     }

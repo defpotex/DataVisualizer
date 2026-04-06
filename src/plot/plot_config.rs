@@ -42,24 +42,45 @@ pub struct MapPlotConfig {
     pub tile_scheme: TileScheme,
 }
 
+/// Configuration for an X/Y scatter plot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScatterPlotConfig {
+    pub id: usize,
+    pub title: String,
+    pub source_id: SourceId,
+    pub x_col: String,
+    pub y_col: String,
+    /// Optional column for color-coding points (future: Phase 7).
+    pub color_col: Option<String>,
+}
+
 /// Top-level discriminated union of all plot types.
-/// Extend with `Scatter(ScatterPlotConfig)`, `Bar(BarPlotConfig)`, etc. in future phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PlotConfig {
     Map(MapPlotConfig),
+    Scatter(ScatterPlotConfig),
 }
 
 impl PlotConfig {
     pub fn id(&self) -> usize {
         match self {
             PlotConfig::Map(c) => c.id,
+            PlotConfig::Scatter(c) => c.id,
         }
     }
 
     pub fn title(&self) -> &str {
         match self {
             PlotConfig::Map(c) => &c.title,
+            PlotConfig::Scatter(c) => &c.title,
+        }
+    }
+
+    pub fn source_id(&self) -> SourceId {
+        match self {
+            PlotConfig::Map(c) => c.source_id,
+            PlotConfig::Scatter(c) => c.source_id,
         }
     }
 }

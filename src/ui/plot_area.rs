@@ -1,4 +1,4 @@
-use crate::plot::plot_config::MapPlotConfig;
+use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig};
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use crate::ui::plot_grid::PlotManager;
@@ -10,33 +10,38 @@ pub struct PlotArea {
 }
 
 impl PlotArea {
-    /// Add a new map plot (called by app after the dialog completes).
     pub fn add_map_plot(&mut self, config: MapPlotConfig, state: &AppState, central_rect: egui::Rect) {
         self.plot_manager.add_map_plot(config, state, central_rect);
     }
 
-    /// Remove a plot by ID (called when user clicks Remove in the left pane).
+    pub fn add_scatter_plot(&mut self, config: ScatterPlotConfig, state: &AppState, central_rect: egui::Rect) {
+        self.plot_manager.add_scatter_plot(config, state, central_rect);
+    }
+
     pub fn remove_plot(&mut self, id: usize) {
         self.plot_manager.remove_plot(id);
     }
 
-    /// Remove all plots that reference the given source (called on source removal).
     pub fn remove_plots_for_source(&mut self, source_id: usize) {
         self.plot_manager.remove_plots_for_source(source_id);
     }
 
-    /// (id, title) pairs for left-pane plot cards.
-    pub fn plot_summaries(&self) -> Vec<(usize, String)> {
-        self.plot_manager.plot_ids_and_titles()
+    /// Re-sync all plot data after filters change.
+    pub fn sync_all_filters(&mut self, state: &AppState) {
+        self.plot_manager.sync_all_filters(state);
     }
 
-    /// Draw floating plot windows constrained to the central panel rect.
-    /// Returns IDs of plots the user closed via the window X button.
-    pub fn show_windows(&mut self, ctx: &Context, theme: &AppTheme, central_rect: egui::Rect, grid_size: f32, max_draw_points: usize) -> Vec<usize> {
+    pub fn show_windows(
+        &mut self,
+        ctx: &Context,
+        theme: &AppTheme,
+        central_rect: egui::Rect,
+        grid_size: f32,
+        max_draw_points: usize,
+    ) -> Vec<usize> {
         self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, max_draw_points)
     }
 
-    /// Draw the central panel background / empty state hint.
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState, grid_size: f32) {
         if !self.plot_manager.is_empty() {
             self.show_has_plots(ui, theme, grid_size);
@@ -47,15 +52,12 @@ impl PlotArea {
         }
     }
 
-    // ── No sources loaded ─────────────────────────────────────────────────────
-
     fn show_empty(&self, ui: &mut Ui, theme: &AppTheme) {
         let c = &theme.colors;
         let s = &theme.spacing;
         let panel_width = ui.available_width();
 
         ui.add_space(ui.available_height() * 0.28);
-
         ui.vertical_centered(|ui| {
             ui.label(RichText::new("◈").color(c.accent_primary).size(52.0));
             ui.add_space(10.0);
@@ -77,7 +79,6 @@ impl PlotArea {
                     .size(s.font_body),
             );
             ui.add_space(24.0);
-
             let group_width = 388.0_f32;
             let offset = (panel_width - group_width).max(0.0) / 2.0;
             ui.horizontal(|ui| {
@@ -91,18 +92,13 @@ impl PlotArea {
         });
     }
 
-    // ── Sources loaded, no plots yet ──────────────────────────────────────────
-
     fn show_has_sources(&self, ui: &mut Ui, theme: &AppTheme, state: &AppState) {
         let c = &theme.colors;
         let s = &theme.spacing;
-
         ui.add_space(ui.available_height() * 0.28);
-
         ui.vertical_centered(|ui| {
             ui.label(RichText::new("◈").color(c.accent_primary).size(40.0));
             ui.add_space(10.0);
-
             let src_count = state.sources.len();
             let total_rows: usize = state.sources.iter().map(|s| s.row_count()).sum();
             ui.label(
@@ -116,7 +112,6 @@ impl PlotArea {
                 .size(s.font_body + 1.0)
                 .strong(),
             );
-
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Use  Add Plot  in the left panel to create a visualization.")
@@ -126,21 +121,16 @@ impl PlotArea {
         });
     }
 
-    // ── Plots are open as floating windows ────────────────────────────────────
-
     fn show_has_plots(&self, ui: &mut Ui, theme: &AppTheme, grid_size: f32) {
         let c = &theme.colors;
         let s = &theme.spacing;
 
-        // Draw a subtle dot grid across the entire central panel.
+        // Dot grid background.
         let rect = ui.max_rect();
         let interacting = ui.ctx().input(|i| i.pointer.is_decidedly_dragging() || i.pointer.any_down());
         let grid_alpha: u8 = if interacting { 55 } else { 25 };
         let dot_color = Color32::from_rgba_unmultiplied(
-            c.accent_primary.r(),
-            c.accent_primary.g(),
-            c.accent_primary.b(),
-            grid_alpha,
+            c.accent_primary.r(), c.accent_primary.g(), c.accent_primary.b(), grid_alpha,
         );
         let painter = ui.painter().with_clip_rect(rect);
         let mut x = rect.min.x + grid_size;
@@ -156,11 +146,14 @@ impl PlotArea {
         ui.add_space(ui.available_height() * 0.35);
         ui.vertical_centered(|ui| {
             ui.label(
-                RichText::new(format!("{} plot window{} open", self.plot_manager.len(),
-                    if self.plot_manager.len() == 1 { "" } else { "s" }))
-                    .color(c.text_secondary)
-                    .size(s.font_small)
-                    .italics(),
+                RichText::new(format!(
+                    "{} plot window{} open",
+                    self.plot_manager.len(),
+                    if self.plot_manager.len() == 1 { "" } else { "s" }
+                ))
+                .color(c.text_secondary)
+                .size(s.font_small)
+                .italics(),
             );
             ui.add_space(4.0);
             ui.label(
@@ -172,12 +165,9 @@ impl PlotArea {
     }
 }
 
-// ── Quick-hint card ───────────────────────────────────────────────────────────
-
 fn quick_hint(ui: &mut Ui, label: &str, desc: &str, theme: &AppTheme) {
     let c = &theme.colors;
     let s = &theme.spacing;
-
     egui::Frame::default()
         .fill(c.bg_panel)
         .stroke(egui::Stroke::new(1.0, c.border))
@@ -186,17 +176,8 @@ fn quick_hint(ui: &mut Ui, label: &str, desc: &str, theme: &AppTheme) {
         .show(ui, |ui| {
             ui.set_width(100.0);
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                ui.label(
-                    RichText::new(label)
-                        .color(c.accent_primary)
-                        .size(s.font_body)
-                        .strong(),
-                );
-                ui.label(
-                    RichText::new(desc)
-                        .color(c.text_secondary)
-                        .size(s.font_small),
-                );
+                ui.label(RichText::new(label).color(c.accent_primary).size(s.font_body).strong());
+                ui.label(RichText::new(desc).color(c.text_secondary).size(s.font_small));
             });
         });
 }
