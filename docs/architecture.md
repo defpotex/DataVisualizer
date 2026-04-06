@@ -349,9 +349,10 @@ src/
 ├── app.rs                   # AppState struct, top-level update() and draw()
 ├── state/
 │   ├── mod.rs
-│   ├── app_state.rs         # Master state struct
-│   ├── undo.rs              # UndoStack, AppSnapshot
-│   └── session.rs           # Save/load .tay files
+│   ├── app_state.rs         # Master state struct (sources, plots, perf, events)
+│   ├── perf_settings.rs     # PerformanceSettings (max_draw_points, etc.)
+│   ├── undo.rs              # UndoStack, AppSnapshot [future]
+│   └── session.rs           # Save/load .tay files [future]
 ├── data/
 │   ├── mod.rs
 │   ├── loader.rs            # CSV/Parquet loading via polars
@@ -409,3 +410,4 @@ These existing tools inform design decisions and UX patterns:
 | 0.3 | 2026-04-04 | Phase 1 built: eframe app, Engineering Dark theme (`src/theme.rs`), three-panel layout, persistent geometry |
 | 0.4 | 2026-04-05 | Phases 2–4: ADS-B fetcher, UDP streamer, CSV loading, source panel with schema detection |
 | 0.5 | 2026-04-05 | Phase 5: Map plot implemented. Added `src/plot/` module (`plot_config.rs`, `map_plot.rs`), `src/ui/add_plot_dialog.rs`, `src/ui/plot_grid.rs`. Upgraded egui/eframe 0.29→0.34, walkers pinned to 0.53. `PlotConfig` enum enables future scatter/bar/scroll plot types. `AppState` now tracks `plots: Vec<PlotConfig>`. |
+| 0.6 | 2026-04-05 | Phase 5 polish: GPU quad mesh point rendering in `PointsPlugin` (single `Shape::mesh` draw call replaces N `circle_filled` calls). Iterative collision resolution in `PlotManager`. `PerformanceSettings` in `AppState` + Performance menu DragValue. `app_style: egui::Style` cached on app struct and re-applied each frame to keep dark theme in all egui popup Areas. Added `src/state/perf_settings.rs`. |

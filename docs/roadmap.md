@@ -259,25 +259,30 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F4.1 | Plot grid (basic, multi-plot) | ✅ | 1-plot full-area; 2+ in 2-col responsive grid; `PlotGrid` struct |
+| F4.1 | Plot grid (basic, multi-plot) | ✅ | Floating egui Windows; 2-col default tiling; snap-to-grid on drag release |
 | F4.2 | Add Plot dialog | ✅ | Source, lat/lon column, tile scheme, title selection; opens from left pane |
+| F4.3 | Per-plot title bar | ✅ | Toolbar with scheme/column labels, close button |
 | F5.1 | Tile map base layer | ✅ | `walkers 0.53` with `HttpTiles`; OSM + Carto Dark custom source |
 | F5.1.2 | Online tile fetch + cache | ✅ | walkers `HttpTiles` handles HTTP fetch + in-memory tile cache |
 | F5.1.3 | Map scheme switcher (2 schemes) | ✅ | OpenStreetMap (light) + Carto Dark Matter via `TileScheme` enum |
-| F5.2 | Data point rendering | ✅ | Fixed cyan accent color; `Plugin` trait; `projector.project()` |
+| F5.2 | Data point rendering | ✅ | GPU quad mesh batching — one draw call per plot; viewport culling |
 | F5.5 | Zoom & pan | ✅ | Built into walkers Map widget (scroll wheel + drag) |
 | F5.4 | Hover tooltip | ⬜ | Deferred to Phase 8 (alongside selection) |
+| F12.4 | Performance menu | ✅ (partial) | Max Points/Plot setting with live DragValue; default 100K |
+| F14.3 | LOD rendering | ✅ (partial) | Stride subsampling when n > max_draw_points; viewport culling |
 
-**Exit criteria:** User assigns lat/lon fields, sees points on the map, can pan/zoom. ✅
+**Exit criteria:** User assigns lat/lon fields, sees points on the map, can pan/zoom. Multi-plot windows snap to grid and cannot overlap. ✅
 
 **Implementation notes:**
-- Upgraded `egui`/`eframe` from 0.29 → 0.34 to match `walkers 0.53` dependency on `egui 0.34`
-- `Rounding` → `CornerRadius`; `Margin::same(f32)` now takes `i8` (use `Margin::from(f32)`)
-- `Panel::top/left`, `global_style/set_global_style`, `CornerRadius`, shadow fields now `u8`
-- `eframe 0.34` `App` trait: required method is `ui()`, `update()` is provided default (we implement both — `ui()` as stub, `update()` for full ctx access)
+- Upgraded `egui`/`eframe` from 0.29 → 0.34 to match `walkers 0.53`
+- `Rounding` → `CornerRadius`; `Margin::same(f32)` → `Margin::from(f32)`; shadow fields now `u8`
+- `eframe 0.34` `App` trait: required method is `ui()`, `update()` is provided default
 - `walkers::Position` = `geo_types::Point`; constructor is `walkers::lat_lon(lat, lon)`
 - `TileSource` + `Attribution` live in `walkers::sources`
 - `PlotConfig` enum enables future plot types (Scatter, Bar) to extend cleanly
+- GPU rendering: `PointsPlugin` builds `egui::Mesh` (quads via `Vertex` + `WHITE_UV`), submitted as a single `Shape::mesh` draw call — replaces N × `circle_filled` CPU painter calls
+- Collision detection: iterative push loop (up to 32 iterations per mover) resolves N-body overlap correctly; positions grid-snapped and clamped to central panel
+- `PerformanceSettings` in `AppState`; `app_style: egui::Style` cached and re-applied each frame to keep dark theme in egui popups/menus
 
 ---
 
@@ -422,3 +427,4 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 | 2026-04-05 | Phase 3 | UDP replay streamer complete: timestamp-ordered delivery, speed multiplier, loop mode, header flag, Ctrl+C |
 | 2026-04-05 | Phase 4 | CSV data loading: background thread, schema heuristics, source panel with field list, multi-file, remove |
 | 2026-04-05 | Phase 5 | Map plot: walkers tile map, Add Plot dialog, PlotGrid multi-plot layout, Carto Dark + OSM tile schemes, egui/eframe upgraded 0.29→0.34 |
+| 2026-04-05 | Phase 5 | Map plot polish: GPU mesh point rendering (1 draw call/plot), iterative N-body collision detection, snap-to-grid, dot grid background, Performance menu with configurable max points, dark theme popup fix |
