@@ -1,7 +1,9 @@
 use crate::app::PaneAction;
 use crate::data::schema::FieldKind;
+use crate::plot::plot_config::PlotConfig;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
+use crate::ui::add_plot_dialog::AddPlotDialog;
 use egui::{RichText, Ui};
 
 pub struct LeftPane {
@@ -11,16 +13,18 @@ pub struct LeftPane {
     section_sources_open: bool,
     section_plots_open: bool,
     section_filters_open: bool,
+    /// Add Plot modal dialog
+    add_plot_dialog: AddPlotDialog,
 }
 
 impl Default for LeftPane {
     fn default() -> Self {
         Self {
             fields_expanded: std::collections::HashSet::new(),
-            // All sections open by default
             section_sources_open: true,
             section_plots_open: true,
             section_filters_open: true,
+            add_plot_dialog: AddPlotDialog::default(),
         }
     }
 }
@@ -102,27 +106,29 @@ impl LeftPane {
 
                 ui.add_space(4.0);
 
-                // ── ADD PLOT section ──────────────────────────────────────────
+                // ── PLOTS section ─────────────────────────────────────────────
                 collapsible_section(
                     ui,
                     theme,
-                    "ADD PLOT",
+                    "PLOTS",
                     &mut self.section_plots_open,
                     |ui| {
                         ui.add_space(4.0);
-                        ui.add_enabled(
-                            state.has_sources(),
-                            egui::Button::new(
-                                RichText::new("＋  Add Plot")
-                                    .color(if state.has_sources() {
-                                        c.accent_primary
-                                    } else {
-                                        c.text_secondary
-                                    })
-                                    .size(s.font_body),
-                            )
-                            .min_size(egui::vec2(ui.available_width(), 0.0)),
-                        );
+                        let btn = egui::Button::new(
+                            RichText::new("＋  Add Plot")
+                                .color(if state.has_sources() {
+                                    c.accent_primary
+                                } else {
+                                    c.text_secondary
+                                })
+                                .size(s.font_body),
+                        )
+                        .min_size(egui::vec2(ui.available_width(), 0.0));
+
+                        if ui.add_enabled(state.has_sources(), btn).clicked() {
+                            self.add_plot_dialog.open();
+                        }
+
                         if !state.has_sources() {
                             ui.add_space(4.0);
                             ui.label(
@@ -132,9 +138,41 @@ impl LeftPane {
                                     .italics(),
                             );
                         }
+
+                        // ── Plot cards ────────────────────────────────────────
+                        if state.plots.is_empty() && state.has_sources() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("No plots yet.")
+                                    .color(c.text_secondary)
+                                    .size(s.font_small)
+                                    .italics(),
+                            );
+                        }
+
+                        for plot_config in &state.plots {
+                            ui.add_space(4.0);
+                            let source_label = match plot_config {
+                                PlotConfig::Map(cfg) => state
+                                    .sources
+                                    .iter()
+                                    .find(|s| s.id == cfg.source_id)
+                                    .map(|s| s.label.as_str())
+                                    .unwrap_or("(removed)"),
+                            };
+                            if let Some(remove_id) = plot_card(ui, theme, plot_config, source_label) {
+                                action = Some(PaneAction::RemovePlot(remove_id));
+                            }
+                        }
+
                         ui.add_space(6.0);
                     },
                 );
+
+                // Render Add Plot dialog (floating window, outside the section frame)
+                if let Some(config) = self.add_plot_dialog.show(ui, theme, state) {
+                    action = Some(PaneAction::AddPlot(config));
+                }
 
                 ui.add_space(4.0);
 
@@ -248,11 +286,11 @@ fn collapsible_section(
         egui::Frame::default()
             .fill(c.bg_panel)
             .stroke(egui::Stroke::new(1.0, c.border))
-            .rounding(egui::Rounding {
-                nw: 0.0, ne: 0.0,
-                sw: s.rounding, se: s.rounding,
+            .corner_radius(egui::CornerRadius {
+                nw: 0, ne: 0,
+                sw: s.rounding as u8, se: s.rounding as u8,
             })
-            .inner_margin(egui::Margin::symmetric(s.panel_padding, 4.0))
+            .inner_margin(egui::Margin::from(egui::vec2(s.panel_padding, 4.0)))
             .show(ui, content);
     }
 }
@@ -272,8 +310,8 @@ fn source_card(
     egui::Frame::default()
         .fill(c.bg_app)
         .stroke(egui::Stroke::new(1.0, c.border))
-        .rounding(s.rounding)
-        .inner_margin(egui::Margin::same(8.0))
+        .corner_radius(s.rounding)
+        .inner_margin(egui::Margin::from(8.0_f32))
         .show(ui, |ui| {
             // Header: dot + name
             ui.horizontal(|ui| {
@@ -353,6 +391,62 @@ fn source_card(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Plot card ─────────────────────────────────────────────────────────────────
+
+/// Returns `Some(plot_id)` if the Remove button was clicked.
+fn plot_card(
+    ui: &mut Ui,
+    theme: &AppTheme,
+    config: &PlotConfig,
+    source_label: &str,
+) -> Option<usize> {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    let mut remove_id = None;
+
+    egui::Frame::default()
+        .fill(c.bg_app)
+        .stroke(egui::Stroke::new(1.0, c.border))
+        .corner_radius(s.rounding)
+        .inner_margin(egui::Margin::from(8.0_f32))
+        .show(ui, |ui| {
+            // Header: icon + title
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("◈").color(c.accent_primary).size(s.font_small));
+                ui.label(
+                    RichText::new(config.title())
+                        .color(c.text_primary)
+                        .size(s.font_body)
+                        .strong(),
+                );
+            });
+
+            // Subtitle: plot type + source
+            let type_label = match config {
+                PlotConfig::Map(_) => "Map",
+            };
+            ui.label(
+                RichText::new(format!("{type_label}  ·  {source_label}"))
+                    .color(c.text_secondary)
+                    .size(s.font_small),
+            );
+
+            ui.add_space(4.0);
+
+            // Remove button
+            if ui
+                .add(egui::Button::new(
+                    RichText::new("Remove").color(c.accent_warning).size(s.font_small),
+                ).min_size(egui::vec2(ui.available_width(), 0.0)))
+                .clicked()
+            {
+                remove_id = Some(config.id());
+            }
+        });
+
+    remove_id
+}
 
 fn field_icon_color(kind: &FieldKind, theme: &AppTheme) -> egui::Color32 {
     let c = &theme.colors;

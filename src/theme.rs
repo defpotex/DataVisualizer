@@ -3,7 +3,7 @@
 /// Every color, font size, and spacing constant lives here.
 /// To add a new theme: add a variant to `ThemePreset` and a branch in `AppTheme::from_preset`.
 /// No other file needs to change.
-use egui::{Color32, FontId, Rounding, Stroke, Style, Visuals};
+use egui::{Color32, CornerRadius, FontId, Stroke, Style, Visuals};
 use serde::{Deserialize, Serialize};
 
 // ── Preset selector ──────────────────────────────────────────────────────────
@@ -140,13 +140,13 @@ impl AppTheme {
         // Window stroke (border)
         visuals.window_stroke = Stroke::new(1.0, c.border);
 
-        // Rounding
-        let r = Rounding::same(s.rounding);
-        visuals.window_rounding = r;
-        visuals.menu_rounding = r;
+        // Rounding (CornerRadius in egui 0.34; From<f32> is impl'd)
+        let r = CornerRadius::from(s.rounding);
+        visuals.window_corner_radius = r;
+        visuals.menu_corner_radius = r;
 
         // Widgets
-        let rw = Rounding::same(s.rounding - 1.0);
+        let rw = CornerRadius::from((s.rounding - 1.0).max(0.0));
 
         // noninteractive — used for popup/menu frame backgrounds, separators,
         // and non-clickable labels. Must be set explicitly or egui falls back
@@ -154,30 +154,30 @@ impl AppTheme {
         visuals.widgets.noninteractive.bg_fill = c.bg_panel;
         visuals.widgets.noninteractive.weak_bg_fill = c.bg_app;
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, c.border);
-        visuals.widgets.noninteractive.rounding = rw;
+        visuals.widgets.noninteractive.corner_radius = rw;
         visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, c.text_secondary);
 
         visuals.widgets.inactive.bg_fill = c.widget_bg;
         visuals.widgets.inactive.weak_bg_fill = c.widget_bg;
         visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, c.border);
-        visuals.widgets.inactive.rounding = rw;
+        visuals.widgets.inactive.corner_radius = rw;
         visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, c.text_secondary);
 
         visuals.widgets.hovered.bg_fill = c.widget_bg_hovered;
         visuals.widgets.hovered.weak_bg_fill = c.widget_bg_hovered;
         visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, c.accent_primary);
-        visuals.widgets.hovered.rounding = rw;
+        visuals.widgets.hovered.corner_radius = rw;
         visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, c.text_primary);
 
         visuals.widgets.active.bg_fill = c.widget_bg_active;
         visuals.widgets.active.weak_bg_fill = c.widget_bg_active;
         visuals.widgets.active.bg_stroke = Stroke::new(1.0, c.accent_primary);
-        visuals.widgets.active.rounding = rw;
+        visuals.widgets.active.corner_radius = rw;
         visuals.widgets.active.fg_stroke = Stroke::new(1.5, c.accent_primary);
 
         visuals.widgets.open.bg_fill = c.widget_bg_active;
         visuals.widgets.open.bg_stroke = Stroke::new(1.0, c.accent_primary);
-        visuals.widgets.open.rounding = rw;
+        visuals.widgets.open.corner_radius = rw;
         visuals.widgets.open.fg_stroke = Stroke::new(1.5, c.accent_primary);
 
         // Selection highlight
@@ -193,18 +193,18 @@ impl AppTheme {
         visuals.hyperlink_color = c.accent_primary;
 
         // Separator lines
-        visuals.window_shadow.blur = 0.0; // no shadow — flat engineering aesthetic
-        visuals.window_shadow.spread = 0.0;
-        visuals.popup_shadow.blur = 0.0;
-        visuals.popup_shadow.spread = 0.0;
+        visuals.window_shadow.blur = 0; // no shadow — flat engineering aesthetic
+        visuals.window_shadow.spread = 0;
+        visuals.popup_shadow.blur = 0;
+        visuals.popup_shadow.spread = 0;
 
         style.visuals = visuals;
 
         // Spacing
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-        style.spacing.window_margin = egui::Margin::same(s.panel_padding);
+        style.spacing.window_margin = egui::Margin::from(s.panel_padding);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
-        style.spacing.menu_margin = egui::Margin::same(4.0);
+        style.spacing.menu_margin = egui::Margin::from(4.0_f32);
         style.spacing.indent = 14.0;
 
         // Text styles

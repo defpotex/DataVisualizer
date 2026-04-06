@@ -1,4 +1,6 @@
 use crate::data::source::{DataSource, SourceId};
+use crate::plot::plot_config::PlotConfig;
+use crate::state::perf_settings::PerformanceSettings;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 /// Events sent from background threads to the UI thread.
@@ -15,7 +17,13 @@ pub struct AppState {
     pub sources: Vec<DataSource>,
 
     /// Monotonically increasing ID counter for new sources.
-    next_id: SourceId,
+    next_source_id: SourceId,
+
+    /// Serializable plot configurations (used for session persistence).
+    pub plots: Vec<PlotConfig>,
+
+    /// Monotonically increasing ID counter for new plots.
+    plot_id_counter: usize,
 
     /// Sender cloned and handed to background loader threads.
     pub event_tx: Sender<DataEvent>,
@@ -24,6 +32,9 @@ pub struct AppState {
 
     /// Non-fatal messages shown in the UI (e.g. load errors).
     pub notifications: Vec<String>,
+
+    /// User-tunable performance settings.
+    pub perf: PerformanceSettings,
 }
 
 impl Default for AppState {
@@ -31,10 +42,13 @@ impl Default for AppState {
         let (tx, rx) = unbounded();
         Self {
             sources: Vec::new(),
-            next_id: 0,
+            next_source_id: 0,
+            plots: Vec::new(),
+            plot_id_counter: 0,
             event_tx: tx,
             event_rx: rx,
             notifications: Vec::new(),
+            perf: PerformanceSettings::default(),
         }
     }
 }
@@ -42,15 +56,24 @@ impl Default for AppState {
 impl AppState {
     /// Allocate and return the next source ID.
     pub fn next_source_id(&mut self) -> SourceId {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.next_source_id;
+        self.next_source_id += 1;
+        id
+    }
+
+    /// Allocate and return the next plot ID.
+    pub fn alloc_plot_id(&mut self) -> usize {
+        let id = self.plot_id_counter;
+        self.plot_id_counter += 1;
         id
     }
 
     /// Drain all pending events from background threads.
-    /// Call once per frame from update().
-    pub fn poll_events(&mut self) {
+    /// Returns `true` if at least one event was received (caller should request repaint).
+    pub fn poll_events(&mut self) -> bool {
+        let mut got_event = false;
         while let Ok(event) = self.event_rx.try_recv() {
+            got_event = true;
             match event {
                 DataEvent::Loaded(source) => {
                     self.sources.push(source);
@@ -60,6 +83,7 @@ impl AppState {
                 }
             }
         }
+        got_event
     }
 
     /// Remove a source by ID.

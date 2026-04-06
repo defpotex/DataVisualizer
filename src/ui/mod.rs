@@ -1,3 +1,5 @@
+pub mod add_plot_dialog;
 pub mod left_pane;
 pub mod menu_bar;
 pub mod plot_area;
+pub mod plot_grid;
