@@ -63,7 +63,7 @@ impl AddPlotDialog {
             .frame(egui::Frame {
                 fill: c.bg_panel,
                 stroke: egui::Stroke::new(1.0, c.border),
-                corner_radius: egui::Rounding::from(6.0_f32),
+                corner_radius: egui::CornerRadius::from(6.0_f32),
                 inner_margin: egui::Margin::from(16.0_f32),
                 ..Default::default()
             })

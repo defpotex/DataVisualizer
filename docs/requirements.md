@@ -107,3 +107,5 @@ Vehicle Track/Telemetry Visualization Application
 
 - **User-selectable themes:** Allow users to switch between named color/layout themes (e.g. "Engineering Dark", "Light", "High Contrast", "Radar Green"). Theme controls colors, fonts, spacing, and panel proportions. Implementation should use a centralized `AppTheme` struct so themes are swappable at runtime with zero code changes elsewhere.
 
+- **Main Pane Status Bar"** Add a status bar at the bottom of the main window with some stats
+- **Rename Plot ID/Titles** Add option to reneame plot Titles to window or in left pane card

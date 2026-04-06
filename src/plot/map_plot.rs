@@ -3,6 +3,7 @@ use crate::plot::plot_config::{MapPlotConfig, TileScheme};
 use crate::theme::AppTheme;
 use egui::{Color32, Context, Pos2, Rect, RichText, Ui, vec2};
 use polars::prelude::DataType;
+use std::sync::Arc;
 use walkers::sources::{Attribution, OpenStreetMap, TileSource};
 use walkers::{HttpTiles, Map, MapMemory, Position, Projector, Tiles};
 
@@ -32,13 +33,19 @@ impl TileSource for CartoDark {
 
 pub struct MapPlot {
     pub config: MapPlotConfig,
-    /// Drives the egui::Window open flag.
     is_open: bool,
-    /// Starting position computed on creation; egui remembers user moves after first show.
+
+    /// Starting grid-aligned position.  egui remembers user moves after first show.
     default_pos: Pos2,
+
+    /// When Some, force the window to this position for one frame (post-drag snap).
+    pending_snap: Option<Pos2>,
+
     tiles: Option<HttpTiles>,
     map_memory: MapMemory,
-    points: Vec<[f64; 2]>,
+
+    /// Points stored behind Arc so per-frame clone is O(1).
+    points: Arc<Vec<[f64; 2]>>,
 }
 
 impl MapPlot {
@@ -47,23 +54,51 @@ impl MapPlot {
             config,
             is_open: true,
             default_pos,
+            pending_snap: None,
             tiles: None,
             map_memory: MapMemory::default(),
-            points: Vec::new(),
+            points: Arc::new(Vec::new()),
         }
     }
 
     pub fn sync_data(&mut self, source: &DataSource) {
-        self.points = extract_lat_lon(&source.df, &self.config.lat_col, &self.config.lon_col);
+        self.points = Arc::new(
+            extract_lat_lon(&source.df, &self.config.lat_col, &self.config.lon_col)
+        );
     }
 
     pub fn plot_id(&self) -> usize {
         self.config.id
     }
 
+    /// The egui Area ID this window uses — needed externally for collision detection.
+    pub fn window_id(&self) -> egui::Id {
+        egui::Id::new(("map_plot_win", self.config.id))
+    }
+
+    /// Override the pending snap position (e.g. after collision resolution).
+    pub fn set_pending_snap(&mut self, pos: Pos2) {
+        self.pending_snap = Some(pos);
+    }
+
+    /// Returns the rect this window intends to occupy next frame:
+    /// pending_snap position (if set) or current AreaState position, plus current size.
+    pub fn intended_rect(&self, ctx: &egui::Context) -> Option<egui::Rect> {
+        let state = egui::AreaState::load(ctx, self.window_id())?;
+        let size = state.size?;
+        let pos = self.pending_snap.unwrap_or_else(|| state.left_top_pos());
+        Some(egui::Rect::from_min_size(pos, size))
+    }
+
     /// Render as a floating egui Window constrained to `central_rect`.
     /// Returns `false` if the user closed the window.
-    pub fn show_as_window(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect) -> bool {
+    pub fn show_as_window(
+        &mut self,
+        ctx: &Context,
+        theme: &AppTheme,
+        central_rect: Rect,
+        grid_size: f32,
+    ) -> bool {
         if !self.is_open {
             return false;
         }
@@ -71,6 +106,10 @@ impl MapPlot {
         let c = &theme.colors;
         let s = &theme.spacing;
         let id = self.config.id;
+        let win_id = egui::Id::new(("map_plot_win", id));
+
+        let default_w = (central_rect.width() * 0.5 - 12.0).max(320.0);
+        let default_h = (central_rect.height() * 0.5 - 12.0).max(200.0);
 
         let window_frame = egui::Frame {
             fill: c.bg_panel,
@@ -80,19 +119,18 @@ impl MapPlot {
             ..Default::default()
         };
 
-        // Default size: half the central panel in each dimension.
-        let default_w = (central_rect.width() * 0.5 - 12.0).max(320.0);
-        let default_h = (central_rect.height() * 0.5 - 12.0).max(200.0);
+        // Apply a pending snap by using current_pos for this frame only.
+        let snap = self.pending_snap.take();
 
         let mut is_open = self.is_open;
 
-        egui::Window::new(
+        let mut win = egui::Window::new(
             RichText::new(&self.config.title)
                 .color(c.text_primary)
                 .size(s.font_body)
                 .strong(),
         )
-        .id(egui::Id::new(("map_plot_win", id)))
+        .id(win_id)
         .open(&mut is_open)
         .resizable(true)
         .collapsible(true)
@@ -100,18 +138,41 @@ impl MapPlot {
         .default_size([default_w, default_h])
         .min_size([320.0, 200.0])
         .constrain_to(central_rect)
-        .frame(window_frame)
-        .show(ctx, |ui| {
-            // Push a unique ID scope so all inner widget IDs are namespaced per plot,
-            // preventing clashes when multiple windows share the same inner structure.
+        .frame(window_frame);
+
+        if let Some(snapped_pos) = snap {
+            win = win.current_pos(snapped_pos);
+        }
+
+        win.show(ctx, |ui| {
             ui.push_id(id, |ui| {
                 show_toolbar(ui, &self.config, self.points.len(), theme);
                 ui.separator();
-                show_map(ui, &mut self.tiles, &mut self.map_memory, &self.config, &self.points, theme);
+                show_map(
+                    ui,
+                    &mut self.tiles,
+                    &mut self.map_memory,
+                    &self.config,
+                    Arc::clone(&self.points),
+                    theme,
+                );
             });
         });
 
         self.is_open = is_open;
+
+        // Snap to grid on pointer release (end of drag).
+        let pointer_released = ctx.input(|i| i.pointer.any_released());
+        if pointer_released {
+            if let Some(state) = egui::AreaState::load(ctx, win_id) {
+                let current = state.left_top_pos();
+                let snapped = snap_to_grid(current, grid_size);
+                if (snapped - current).length() > 0.5 {
+                    self.pending_snap = Some(snapped);
+                }
+            }
+        }
+
         self.is_open
     }
 }
@@ -144,10 +205,13 @@ fn show_toolbar(ui: &mut Ui, config: &MapPlotConfig, point_count: usize, theme: 
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new(format!("lon: {}  lat: {}", config.lon_col, config.lat_col))
-                            .color(c.text_secondary)
-                            .size(s.font_small)
-                            .monospace(),
+                        RichText::new(format!(
+                            "lon: {}  lat: {}",
+                            config.lon_col, config.lat_col
+                        ))
+                        .color(c.text_secondary)
+                        .size(s.font_small)
+                        .monospace(),
                     );
                 });
             });
@@ -161,31 +225,34 @@ fn show_map(
     tiles: &mut Option<HttpTiles>,
     map_memory: &mut MapMemory,
     config: &MapPlotConfig,
-    points: &[[f64; 2]],
+    points: Arc<Vec<[f64; 2]>>,
     theme: &AppTheme,
 ) {
     if tiles.is_none() {
         *tiles = Some(make_tiles(&config.tile_scheme, ui.ctx().clone()));
     }
 
-    let center = compute_center(points);
+    let center = compute_center(&points);
     let accent = theme.colors.accent_primary;
-    let pts: Vec<[f64; 2]> = points.to_vec();
-
     let tile_ref: &mut dyn Tiles = tiles.as_mut().unwrap();
 
     ui.add(
         Map::new(Some(tile_ref), map_memory, center)
-            .with_plugin(PointsPlugin { points: pts, color: accent }),
+            .with_plugin(PointsPlugin { points, color: accent }),
     );
 }
 
-// ── Plugin: draw data points clipped to the map rect ─────────────────────────
+// ── Plugin: draw data points ──────────────────────────────────────────────────
 
 struct PointsPlugin {
-    points: Vec<[f64; 2]>,
+    /// Arc clone — O(1), no data copy.
+    points: Arc<Vec<[f64; 2]>>,
     color: Color32,
 }
+
+/// Maximum points rendered per frame regardless of dataset size.
+/// Above this threshold we subsample evenly so draw-call cost is bounded.
+const MAX_DRAW_POINTS: usize = 8_000;
 
 impl walkers::Plugin for PointsPlugin {
     fn run(
@@ -195,14 +262,32 @@ impl walkers::Plugin for PointsPlugin {
         projector: &Projector,
         _map_memory: &MapMemory,
     ) {
-        // Clip to the map widget's rect so points don't bleed into the toolbar.
         let painter = ui.painter().with_clip_rect(response.rect);
-        for [lat, lon] in &self.points {
+        let n = self.points.len();
+        if n == 0 { return; }
+
+        // Adaptive stride: draw every Nth point so we never exceed MAX_DRAW_POINTS.
+        let step = (n / MAX_DRAW_POINTS).max(1);
+
+        let rect = response.rect;
+        for [lat, lon] in self.points.iter().step_by(step) {
             let pos = walkers::lat_lon(*lat, *lon);
             let v = projector.project(pos);
-            painter.circle_filled(Pos2::new(v.x, v.y), 3.0, self.color);
+            let screen = Pos2::new(v.x, v.y);
+            // Skip points outside the visible rect (viewport culling).
+            if !rect.contains(screen) { continue; }
+            painter.circle_filled(screen, 3.0, self.color);
         }
     }
+}
+
+// ── Grid snap ─────────────────────────────────────────────────────────────────
+
+pub fn snap_to_grid(pos: Pos2, grid: f32) -> Pos2 {
+    Pos2::new(
+        (pos.x / grid).round() * grid,
+        (pos.y / grid).round() * grid,
+    )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -223,16 +308,27 @@ fn compute_center(points: &[[f64; 2]]) -> Position {
     walkers::lat_lon(lat, lon)
 }
 
-fn extract_lat_lon(df: &polars::prelude::DataFrame, lat_col: &str, lon_col: &str) -> Vec<[f64; 2]> {
-    let Some(lats) = get_f64_vec(df, lat_col) else { return vec![] };
-    let Some(lons) = get_f64_vec(df, lon_col) else { return vec![] };
+fn extract_lat_lon(
+    df: &polars::prelude::DataFrame,
+    lat_col: &str,
+    lon_col: &str,
+) -> Vec<[f64; 2]> {
+    let Some(lats) = get_f64_vec(df, lat_col) else {
+        return vec![];
+    };
+    let Some(lons) = get_f64_vec(df, lon_col) else {
+        return vec![];
+    };
     lats.into_iter()
         .zip(lons)
         .filter_map(|(lat, lon)| Some([lat?, lon?]))
         .collect()
 }
 
-fn get_f64_vec(df: &polars::prelude::DataFrame, col_name: &str) -> Option<Vec<Option<f64>>> {
+fn get_f64_vec(
+    df: &polars::prelude::DataFrame,
+    col_name: &str,
+) -> Option<Vec<Option<f64>>> {
     let col = df.column(col_name).ok()?;
     let series = col.as_series()?;
     let cast = series.cast(&DataType::Float64).ok()?;
@@ -244,7 +340,9 @@ fn format_count(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 { result.push(','); }
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
         result.push(ch);
     }
     result.chars().rev().collect()

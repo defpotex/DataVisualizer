@@ -30,6 +30,9 @@ impl Default for PersistentState {
 
 pub struct DataVisualizerApp {
     theme: AppTheme,
+    /// Pre-computed egui Style for this theme; re-applied every frame so
+    /// popup/menu Areas (which create their own Ui) always inherit our visuals.
+    app_style: egui::Style,
     left_pane_width: f32,
 
     app_state: AppState,
@@ -51,13 +54,15 @@ impl DataVisualizerApp {
 
         let theme = AppTheme::from_preset(persisted.theme_preset);
 
-        let mut style = (*cc.egui_ctx.global_style()).clone();
-        theme.apply_to_style(&mut style);
-        cc.egui_ctx.set_global_style(style);
+        // Build cached style and apply at startup.
+        let mut app_style = egui::Style::default();
+        theme.apply_to_style(&mut app_style);
+        cc.egui_ctx.set_global_style(app_style.clone());
 
         setup_fonts(&cc.egui_ctx);
 
         Self {
+            app_style,
             left_pane_width: persisted.left_pane_width,
             app_state: AppState::default(),
             menu_bar: MenuBar::default(),
@@ -73,11 +78,9 @@ impl DataVisualizerApp {
     }
 
     #[allow(dead_code)]
-    pub fn apply_theme(&mut self, preset: ThemePreset, ctx: &Context) {
+    pub fn apply_theme(&mut self, preset: ThemePreset, _ctx: &Context) {
         self.theme = AppTheme::from_preset(preset);
-        let mut style = (*ctx.global_style()).clone();
-        self.theme.apply_to_style(&mut style);
-        ctx.set_global_style(style);
+        self.theme.apply_to_style(&mut self.app_style);
     }
 
     /// Open a native file dialog and kick off an async CSV load.
@@ -104,18 +107,14 @@ impl eframe::App for DataVisualizerApp {
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Re-apply theme every frame so popups/menus always use our visuals.
-        {
-            let mut style = (*ctx.global_style()).clone();
-            self.theme.apply_to_style(&mut style);
-            ctx.set_global_style(style);
-        }
+        // Re-apply our theme every frame.  egui popup/menu Areas create their
+        // own Ui from ctx.global_style(), so we must ensure it stays set to our
+        // dark theme even if something internally resets it.
+        ctx.set_global_style(self.app_style.clone());
 
         // Drain background-thread events (new sources, errors).
-        self.app_state.poll_events();
-
-        // If a load just finished, request a repaint so the UI updates immediately.
-        if self.app_state.has_sources() {
+        // Only request a repaint when something actually arrived.
+        if self.app_state.poll_events() {
             ctx.request_repaint();
         }
 
@@ -147,16 +146,17 @@ impl eframe::App for DataVisualizerApp {
 
         // ── Plot area (central panel) ─────────────────────────────────────────
         // Capture the central rect so floating windows can be constrained to it.
+        const GRID_SIZE: f32 = 40.0;
         let central_response = egui::CentralPanel::default()
             .frame(plot_area_frame(&theme))
             .show(ctx, |ui| {
-                self.plot_area.show(ui, &theme, &self.app_state);
+                self.plot_area.show(ui, &theme, &self.app_state, GRID_SIZE);
             });
         self.central_rect = central_response.response.rect;
 
         // ── Floating plot windows (drawn after panels so constrain_to works) ──
         // Windows float above panel contents but are bounded to the central rect.
-        let closed_plots = self.plot_area.show_windows(ctx, &theme, self.central_rect);
+        let closed_plots = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE);
         for id in closed_plots {
             self.app_state.plots.retain(|p| p.id() != id);
         }

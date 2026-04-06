@@ -64,9 +64,11 @@ impl AppState {
     }
 
     /// Drain all pending events from background threads.
-    /// Call once per frame from update().
-    pub fn poll_events(&mut self) {
+    /// Returns `true` if at least one event was received (caller should request repaint).
+    pub fn poll_events(&mut self) -> bool {
+        let mut got_event = false;
         while let Ok(event) = self.event_rx.try_recv() {
+            got_event = true;
             match event {
                 DataEvent::Loaded(source) => {
                     self.sources.push(source);
@@ -76,6 +78,7 @@ impl AppState {
                 }
             }
         }
+        got_event
     }
 
     /// Remove a source by ID.

@@ -9,7 +9,8 @@
       "Bash(cargo search:*)",
       "Bash(ls ~/.cargo/registry/src/*/walkers-0.53*/src/)",
       "Bash(cargo info:*)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(grep -v \"^.*//.*\")"
     ]
   }
 }
