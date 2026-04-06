@@ -1,5 +1,8 @@
+use crate::data::schema::FieldKind;
 use crate::data::source::SourceId;
 use serde::{Deserialize, Serialize};
+
+// ── TileScheme ────────────────────────────────────────────────────────────────
 
 /// Which tile provider to use for map backgrounds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,6 +26,35 @@ impl TileScheme {
     }
 }
 
+// ── AxisScale ─────────────────────────────────────────────────────────────────
+
+/// Whether an axis encodes values continuously (numeric) or categorically (discrete labels).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum AxisScale {
+    #[default]
+    Continuous,
+    Categorical,
+}
+
+impl AxisScale {
+    /// Infer axis scale from a field kind. Text/Flag → Categorical, everything else → Continuous.
+    pub fn infer(kind: &FieldKind) -> Self {
+        match kind {
+            FieldKind::Text | FieldKind::Flag => AxisScale::Categorical,
+            _ => AxisScale::Continuous,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            AxisScale::Continuous => "Continuous",
+            AxisScale::Categorical => "Categorical",
+        }
+    }
+}
+
+// ── MapPlotConfig ─────────────────────────────────────────────────────────────
+
 /// Configuration for a geographic map plot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapPlotConfig {
@@ -42,6 +74,8 @@ pub struct MapPlotConfig {
     pub tile_scheme: TileScheme,
 }
 
+// ── ScatterPlotConfig ─────────────────────────────────────────────────────────
+
 /// Configuration for an X/Y scatter plot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScatterPlotConfig {
@@ -52,7 +86,15 @@ pub struct ScatterPlotConfig {
     pub y_col: String,
     /// Optional column for color-coding points (future: Phase 7).
     pub color_col: Option<String>,
+    /// Axis encoding for X — auto-inferred from field kind, user-overridable.
+    #[serde(default)]
+    pub x_scale: AxisScale,
+    /// Axis encoding for Y — auto-inferred from field kind, user-overridable.
+    #[serde(default)]
+    pub y_scale: AxisScale,
 }
+
+// ── PlotConfig ────────────────────────────────────────────────────────────────
 
 /// Top-level discriminated union of all plot types.
 #[derive(Debug, Clone, Serialize, Deserialize)]

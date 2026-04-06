@@ -1,7 +1,7 @@
 use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig};
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
-use crate::ui::plot_grid::PlotManager;
+use crate::ui::plot_grid::{PlotAction, PlotManager};
 use egui::{Align, Color32, Context, Layout, RichText, Ui};
 
 #[derive(Default)]
@@ -31,6 +31,11 @@ impl PlotArea {
         self.plot_manager.sync_all_filters(state);
     }
 
+    /// Re-sync data for a single plot after its config changes.
+    pub fn sync_plot(&mut self, id: usize, state: &AppState) {
+        self.plot_manager.sync_plot(id, state);
+    }
+
     pub fn show_windows(
         &mut self,
         ctx: &Context,
@@ -38,7 +43,7 @@ impl PlotArea {
         central_rect: egui::Rect,
         grid_size: f32,
         max_draw_points: usize,
-    ) -> Vec<usize> {
+    ) -> Vec<PlotAction> {
         self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, max_draw_points)
     }
 

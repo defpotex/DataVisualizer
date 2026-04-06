@@ -1,14 +1,26 @@
 use crate::data::filter::{apply_filters, Filter};
 use crate::data::source::{DataSource, SourceId};
 use crate::plot::map_plot::{snap_to_grid, MapPlot};
-use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig};
-use crate::plot::scatter_plot::ScatterPlot;
+use crate::plot::plot_config::{MapPlotConfig, PlotConfig, ScatterPlotConfig};
+use crate::plot::scatter_plot::{PlotWindowEvent, ScatterPlot};
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use egui::{Context, Rect, vec2};
 use std::collections::HashMap;
 
-/// A single managed plot — either a map or scatter window.
+// ── PlotAction ────────────────────────────────────────────────────────────────
+
+/// Actions produced by `PlotManager::show_windows` that the caller (app.rs) needs to handle.
+pub enum PlotAction {
+    /// User closed a plot window. The live instance has already been removed from PlotManager.
+    Closed(usize),
+    /// User confirmed a config change. The live instance has already been updated.
+    /// Caller should sync app_state.plots and call sync_plot to re-extract data.
+    ConfigChanged(PlotConfig),
+}
+
+// ── ManagedPlot ───────────────────────────────────────────────────────────────
+
 enum ManagedPlot {
     Map(MapPlot),
     Scatter(ScatterPlot),
@@ -24,12 +36,6 @@ impl ManagedPlot {
             Self::Scatter(p) => p.config.source_id,
         }
     }
-    fn title(&self) -> String {
-        match self {
-            Self::Map(p) => p.config.title.clone(),
-            Self::Scatter(p) => p.config.title.clone(),
-        }
-    }
     fn window_id(&self) -> egui::Id {
         match self { Self::Map(p) => p.window_id(), Self::Scatter(p) => p.window_id() }
     }
@@ -39,16 +45,14 @@ impl ManagedPlot {
     fn set_pending_snap(&mut self, pos: egui::Pos2) {
         match self { Self::Map(p) => p.set_pending_snap(pos), Self::Scatter(p) => p.set_pending_snap(pos) }
     }
-    fn show(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, max_pts: usize) -> bool {
+    fn show(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, max_pts: usize) -> PlotWindowEvent {
         match self {
             Self::Map(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts),
             Self::Scatter(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts),
         }
     }
     fn sync_data(&mut self, source: &DataSource, filters: &[Filter]) {
-        // Build a filtered view of the source DataFrame.
         let filtered_df = apply_filters(&source.df, filters);
-        // Temporarily replace source.df with the filtered version for sync.
         let mut tmp = source.clone();
         tmp.df = filtered_df;
         match self {
@@ -56,11 +60,17 @@ impl ManagedPlot {
             Self::Scatter(p) => p.sync_data(&tmp),
         }
     }
+    fn apply_config(&mut self, new_config: PlotConfig) {
+        match (self, new_config) {
+            (Self::Map(p), PlotConfig::Map(c)) => p.apply_config(c),
+            (Self::Scatter(p), PlotConfig::Scatter(c)) => p.apply_config(c),
+            _ => {} // type mismatch — shouldn't happen
+        }
+    }
 }
 
 // ── PlotManager ───────────────────────────────────────────────────────────────
 
-/// Manages all live plot instances and renders each as a floating egui Window.
 #[derive(Default)]
 pub struct PlotManager {
     plots: Vec<ManagedPlot>,
@@ -72,10 +82,7 @@ impl PlotManager {
         let default_pos = tile_default_pos(self.plots.len(), central_rect);
         let mut plot = MapPlot::new(config, default_pos);
         if let Some(source) = state.sources.iter().find(|s| s.id == plot.config.source_id) {
-            let filtered = apply_filters(&source.df, &state.filters);
-            let mut tmp = source.clone();
-            tmp.df = filtered;
-            plot.sync_data(&tmp);
+            plot.sync_data(source);
         }
         self.plots.push(ManagedPlot::Map(plot));
     }
@@ -95,6 +102,15 @@ impl PlotManager {
     /// Re-apply filters to all plots (call whenever filters change).
     pub fn sync_all_filters(&mut self, state: &AppState) {
         for plot in &mut self.plots {
+            if let Some(source) = state.sources.iter().find(|s| s.id == plot.source_id()) {
+                plot.sync_data(source, &state.filters);
+            }
+        }
+    }
+
+    /// Re-sync data for a single plot by ID (call after config change).
+    pub fn sync_plot(&mut self, id: usize, state: &AppState) {
+        if let Some(plot) = self.plots.iter_mut().find(|p| p.plot_id() == id) {
             if let Some(source) = state.sources.iter().find(|s| s.id == plot.source_id()) {
                 plot.sync_data(source, &state.filters);
             }
@@ -127,11 +143,7 @@ impl PlotManager {
     pub fn is_empty(&self) -> bool { self.plots.is_empty() }
     pub fn len(&self) -> usize { self.plots.len() }
 
-    pub fn plot_ids_and_titles(&self) -> Vec<(usize, String)> {
-        self.plots.iter().map(|p| (p.plot_id(), p.title())).collect()
-    }
-
-    /// Draw all plot windows. Returns IDs of closed windows.
+    /// Draw all plot windows. Returns actions for the caller to process.
     pub fn show_windows(
         &mut self,
         ctx: &Context,
@@ -139,16 +151,36 @@ impl PlotManager {
         central_rect: Rect,
         grid_size: f32,
         max_draw_points: usize,
-    ) -> Vec<usize> {
-        let mut closed = Vec::new();
+    ) -> Vec<PlotAction> {
+        let mut actions: Vec<PlotAction> = Vec::new();
+        let mut closed_ids: Vec<usize> = Vec::new();
+
         for plot in &mut self.plots {
-            if !plot.show(ctx, theme, central_rect, grid_size, max_draw_points) {
-                closed.push(plot.plot_id());
+            match plot.show(ctx, theme, central_rect, grid_size, max_draw_points) {
+                PlotWindowEvent::Open => {}
+                PlotWindowEvent::Closed => {
+                    closed_ids.push(plot.plot_id());
+                }
+                PlotWindowEvent::ConfigChanged(new_config) => {
+                    let id = new_config.id();
+                    // Update the live widget's config in-place.
+                    plot.apply_config(new_config.clone());
+                    actions.push(PlotAction::ConfigChanged(new_config));
+                    // Note: data re-sync is handled by the caller (app.rs) via sync_plot,
+                    // because the caller needs AppState to look up the source and filters.
+                    let _ = id;
+                }
             }
         }
-        self.plots.retain(|p| !closed.contains(&p.plot_id()));
+
+        for id in &closed_ids {
+            self.plots.retain(|p| p.plot_id() != *id);
+            self.prev_rects.remove(id);
+            actions.push(PlotAction::Closed(*id));
+        }
+
         self.resolve_collisions(ctx, central_rect, grid_size);
-        closed
+        actions
     }
 
     // ── Collision resolution ──────────────────────────────────────────────────

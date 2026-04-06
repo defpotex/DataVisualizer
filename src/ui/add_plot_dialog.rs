@@ -1,5 +1,5 @@
-use crate::data::schema::FieldKind;
-use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig, TileScheme};
+use crate::data::schema::{FieldKind, FieldMeta};
+use crate::plot::plot_config::{AxisScale, MapPlotConfig, ScatterPlotConfig, TileScheme};
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use egui::{RichText, Ui, Window};
@@ -17,7 +17,7 @@ pub struct AddPlotDialog {
     lat_col_idx: usize,
     lon_col_idx: usize,
     tile_scheme: TileScheme,
-    // Scatter-specific
+    // Scatter-specific (all fields)
     x_col_idx: usize,
     y_col_idx: usize,
 }
@@ -73,7 +73,7 @@ impl AddPlotDialog {
         )
         .collapsible(false)
         .resizable(false)
-        .min_width(380.0)
+        .min_width(400.0)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .frame(egui::Frame {
             fill: c.bg_panel,
@@ -87,15 +87,12 @@ impl AddPlotDialog {
             ui.label(RichText::new("Plot Type").color(c.text_secondary).size(s.font_small));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let map_selected = self.plot_type == PlotType::Map;
-                let scatter_selected = self.plot_type == PlotType::Scatter;
-
-                if type_btn(ui, "◈  Map", map_selected, theme).clicked() {
+                if type_btn(ui, "◈  Map", self.plot_type == PlotType::Map, theme).clicked() {
                     self.plot_type = PlotType::Map;
                     self.title = "Map Plot".to_string();
                 }
                 ui.add_space(6.0);
-                if type_btn(ui, "◉  Scatter", scatter_selected, theme).clicked() {
+                if type_btn(ui, "◉  Scatter", self.plot_type == PlotType::Scatter, theme).clicked() {
                     self.plot_type = PlotType::Scatter;
                     self.title = "Scatter Plot".to_string();
                 }
@@ -127,27 +124,26 @@ impl AddPlotDialog {
             ui.add_space(10.0);
 
             if let Some(source) = state.sources.get(self.selected_source_idx) {
-                let numeric: Vec<&str> = source.schema.fields.iter()
-                    .filter(|f| is_numeric_or_geo(&f.kind))
-                    .map(|f| f.name.as_str())
-                    .collect();
-
-                if self.lat_col_idx >= numeric.len() { self.lat_col_idx = 0; }
-                if self.lon_col_idx >= numeric.len() { self.lon_col_idx = 0; }
-                if self.x_col_idx >= numeric.len() { self.x_col_idx = 0; }
-                if self.y_col_idx >= numeric.len() { self.y_col_idx = 0; }
-
                 match self.plot_type {
                     PlotType::Map => {
-                        // Pre-select lat/lon defaults.
+                        // Map: only numeric/geo fields for lat/lon.
+                        let numeric: Vec<&str> = source.schema.fields.iter()
+                            .filter(|f| is_numeric_or_geo(&f.kind))
+                            .map(|f| f.name.as_str())
+                            .collect();
+
+                        if self.lat_col_idx >= numeric.len() { self.lat_col_idx = 0; }
+                        if self.lon_col_idx >= numeric.len() { self.lon_col_idx = 0; }
+
+                        // Pre-select lat/lon by name heuristic.
                         let lat_default = numeric.iter().position(|n| is_lat_name(n)).unwrap_or(0);
                         let lon_default = numeric.iter().position(|n| is_lon_name(n)).unwrap_or(0);
                         if self.lat_col_idx == 0 && lat_default != 0 { self.lat_col_idx = lat_default; }
                         if self.lon_col_idx == 0 && lon_default != 0 { self.lon_col_idx = lon_default; }
 
-                        col_picker(ui, "Latitude Column", &numeric, &mut self.lat_col_idx, "add_plot_lat", theme);
+                        name_col_picker(ui, "Latitude Column", &numeric, &mut self.lat_col_idx, "add_plot_lat", theme);
                         ui.add_space(8.0);
-                        col_picker(ui, "Longitude Column", &numeric, &mut self.lon_col_idx, "add_plot_lon", theme);
+                        name_col_picker(ui, "Longitude Column", &numeric, &mut self.lon_col_idx, "add_plot_lon", theme);
                         ui.add_space(10.0);
 
                         ui.label(RichText::new("Map Tiles").color(c.text_secondary).size(s.font_small));
@@ -164,45 +160,17 @@ impl AddPlotDialog {
                                 }
                             });
                         ui.add_space(10.0);
-                    }
-                    PlotType::Scatter => {
-                        col_picker(ui, "X Axis Column", &numeric, &mut self.x_col_idx, "add_plot_x", theme);
+
+                        // Title.
+                        title_field(ui, &mut self.title, theme);
+
+                        ui.add_space(16.0);
+                        ui.separator();
                         ui.add_space(8.0);
-                        col_picker(ui, "Y Axis Column", &numeric, &mut self.y_col_idx, "add_plot_y", theme);
-                        ui.add_space(10.0);
-                    }
-                }
 
-                // Title field.
-                ui.label(RichText::new("Plot Title").color(c.text_secondary).size(s.font_small));
-                ui.add_space(2.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.title)
-                        .desired_width(ui.available_width())
-                        .text_color(c.text_primary)
-                        .font(egui::FontSelection::FontId(
-                            egui::FontId::proportional(s.font_body),
-                        )),
-                );
-
-                ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                let can_create = !numeric.is_empty();
-                ui.horizontal(|ui| {
-                    let create_btn = egui::Button::new(
-                        RichText::new("Create Plot")
-                            .color(if can_create { c.bg_app } else { c.text_secondary })
-                            .size(s.font_body)
-                            .strong(),
-                    )
-                    .fill(if can_create { c.accent_primary } else { c.widget_bg })
-                    .min_size(egui::vec2(120.0, 0.0));
-
-                    if ui.add_enabled(can_create, create_btn).clicked() {
-                        result = Some(match self.plot_type {
-                            PlotType::Map => NewPlotConfig::Map(MapPlotConfig {
+                        let can_create = !numeric.is_empty();
+                        if create_btn(ui, can_create, theme).clicked() {
+                            result = Some(NewPlotConfig::Map(MapPlotConfig {
                                 id: 0,
                                 title: self.title.clone(),
                                 source_id: source.id,
@@ -210,23 +178,57 @@ impl AddPlotDialog {
                                 lon_col: numeric.get(self.lon_col_idx).map(|s| s.to_string()).unwrap_or_default(),
                                 color_col: None,
                                 tile_scheme: self.tile_scheme.clone(),
-                            }),
-                            PlotType::Scatter => NewPlotConfig::Scatter(ScatterPlotConfig {
+                            }));
+                            close = true;
+                        }
+                    }
+
+                    PlotType::Scatter => {
+                        // Scatter: ALL fields available.
+                        let all_fields: Vec<&FieldMeta> = source.schema.fields.iter().collect();
+
+                        if self.x_col_idx >= all_fields.len() { self.x_col_idx = 0; }
+                        if self.y_col_idx >= all_fields.len() { self.y_col_idx = 0; }
+
+                        field_meta_picker(ui, "X Axis Column", &all_fields, &mut self.x_col_idx, "add_plot_x", theme);
+                        ui.add_space(8.0);
+                        field_meta_picker(ui, "Y Axis Column", &all_fields, &mut self.y_col_idx, "add_plot_y", theme);
+                        ui.add_space(10.0);
+
+                        // Title.
+                        title_field(ui, &mut self.title, theme);
+
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        let can_create = !all_fields.is_empty();
+                        if create_btn(ui, can_create, theme).clicked() {
+                            let x_field = all_fields.get(self.x_col_idx);
+                            let y_field = all_fields.get(self.y_col_idx);
+                            let x_col = x_field.map(|f| f.name.clone()).unwrap_or_default();
+                            let y_col = y_field.map(|f| f.name.clone()).unwrap_or_default();
+                            let x_scale = x_field.map(|f| AxisScale::infer(&f.kind)).unwrap_or_default();
+                            let y_scale = y_field.map(|f| AxisScale::infer(&f.kind)).unwrap_or_default();
+                            result = Some(NewPlotConfig::Scatter(ScatterPlotConfig {
                                 id: 0,
                                 title: self.title.clone(),
                                 source_id: source.id,
-                                x_col: numeric.get(self.x_col_idx).map(|s| s.to_string()).unwrap_or_default(),
-                                y_col: numeric.get(self.y_col_idx).map(|s| s.to_string()).unwrap_or_default(),
+                                x_col,
+                                y_col,
                                 color_col: None,
-                            }),
-                        });
-                        close = true;
+                                x_scale,
+                                y_scale,
+                            }));
+                            close = true;
+                        }
                     }
-                    ui.add_space(8.0);
-                    if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
-                        close = true;
-                    }
-                });
+                }
+
+                ui.add_space(4.0);
+                if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
+                    close = true;
+                }
             } else {
                 ui.label(
                     RichText::new("No data sources loaded. Load a CSV first.")
@@ -260,32 +262,68 @@ fn type_btn(ui: &mut Ui, label: &str, selected: bool, theme: &AppTheme) -> egui:
     ui.add(btn)
 }
 
-fn col_picker(
-    ui: &mut Ui,
-    label: &str,
-    cols: &[&str],
-    idx: &mut usize,
-    id: &str,
-    theme: &AppTheme,
-) {
+/// Column picker for a `&[&str]` list (map lat/lon — numeric only).
+fn name_col_picker(ui: &mut Ui, label: &str, cols: &[&str], idx: &mut usize, id: &str, theme: &AppTheme) {
     let c = &theme.colors;
     let s = &theme.spacing;
     ui.label(RichText::new(label).color(c.text_secondary).size(s.font_small));
     ui.add_space(2.0);
     let selected_text = cols.get(*idx).copied().unwrap_or("(none)");
     egui::ComboBox::from_id_salt(id)
-        .selected_text(
-            RichText::new(selected_text).color(c.text_data).size(s.font_body).monospace(),
-        )
+        .selected_text(RichText::new(selected_text).color(c.text_data).size(s.font_body).monospace())
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             for (i, name) in cols.iter().enumerate() {
-                ui.selectable_value(
-                    idx, i,
-                    RichText::new(*name).color(c.text_data).size(s.font_body).monospace(),
-                );
+                ui.selectable_value(idx, i, RichText::new(*name).color(c.text_data).size(s.font_body).monospace());
             }
         });
+}
+
+/// Column picker for `&[&FieldMeta]` — shows icon + name for all field types.
+fn field_meta_picker(ui: &mut Ui, label: &str, fields: &[&FieldMeta], idx: &mut usize, id: &str, theme: &AppTheme) {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    ui.label(RichText::new(label).color(c.text_secondary).size(s.font_small));
+    ui.add_space(2.0);
+    let selected_text = fields.get(*idx)
+        .map(|f| format!("{} {}", f.kind.icon(), f.name))
+        .unwrap_or_else(|| "(none)".to_string());
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(RichText::new(&selected_text).color(c.text_data).size(s.font_body).monospace())
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for (i, field) in fields.iter().enumerate() {
+                let entry = format!("{} {}", field.kind.icon(), field.name);
+                ui.selectable_value(idx, i, RichText::new(&entry).color(c.text_data).size(s.font_body).monospace());
+            }
+        });
+}
+
+fn title_field(ui: &mut Ui, title: &mut String, theme: &AppTheme) {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    ui.label(RichText::new("Plot Title").color(c.text_secondary).size(s.font_small));
+    ui.add_space(2.0);
+    ui.add(
+        egui::TextEdit::singleline(title)
+            .desired_width(ui.available_width())
+            .text_color(c.text_primary)
+            .font(egui::FontSelection::FontId(egui::FontId::proportional(s.font_body))),
+    );
+}
+
+fn create_btn(ui: &mut Ui, enabled: bool, theme: &AppTheme) -> egui::Response {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    let btn = egui::Button::new(
+        RichText::new("Create Plot")
+            .color(if enabled { c.bg_app } else { c.text_secondary })
+            .size(s.font_body)
+            .strong(),
+    )
+    .fill(if enabled { c.accent_primary } else { c.widget_bg })
+    .min_size(egui::vec2(120.0, 0.0));
+    ui.add_enabled(enabled, btn)
 }
 
 fn is_numeric_or_geo(kind: &FieldKind) -> bool {

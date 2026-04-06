@@ -2,6 +2,7 @@ use crate::data::loader::load_csv_async;
 use crate::state::app_state::AppState;
 use crate::theme::{AppTheme, ThemePreset};
 use crate::ui::{left_pane::LeftPane, menu_bar::MenuBar, plot_area::PlotArea};
+use crate::ui::plot_grid::PlotAction;
 use eframe::Storage;
 use egui::Context;
 use serde::{Deserialize, Serialize};
@@ -156,9 +157,9 @@ impl eframe::App for DataVisualizerApp {
 
         // ── Floating plot windows (drawn after panels so constrain_to works) ──
         // Windows float above panel contents but are bounded to the central rect.
-        let closed_plots = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, self.app_state.perf.max_draw_points);
-        for id in closed_plots {
-            self.app_state.plots.retain(|p| p.id() != id);
+        let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, self.app_state.perf.max_draw_points);
+        for action in plot_actions {
+            self.handle_plot_action(action);
         }
 
         // Handle actions after all panels are drawn (avoids borrow conflicts)
@@ -248,6 +249,23 @@ impl DataVisualizerApp {
                     f.enabled = !f.enabled;
                 }
                 self.plot_area.sync_all_filters(&self.app_state);
+            }
+        }
+    }
+
+    fn handle_plot_action(&mut self, action: PlotAction) {
+        match action {
+            PlotAction::Closed(id) => {
+                self.app_state.plots.retain(|p| p.id() != id);
+            }
+            PlotAction::ConfigChanged(new_config) => {
+                let id = new_config.id();
+                // Update the canonical config in app_state (for session persistence).
+                if let Some(p) = self.app_state.plots.iter_mut().find(|p| p.id() == id) {
+                    *p = new_config;
+                }
+                // Re-sync data for the live plot instance.
+                self.plot_area.sync_plot(id, &self.app_state);
             }
         }
     }
