@@ -115,3 +115,5 @@ Vehicle Track/Telemetry Visualization Application
 ## Bugs to fix
 - Cant see slider in the Performance dropdown
 - Fix window stacking/performance
+- Right Pane (show/edit filters)
+- UI elements no separate thread
