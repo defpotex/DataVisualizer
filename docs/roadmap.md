@@ -87,12 +87,12 @@
   - ⬜ F5.1.1 Bundled offline tiles (zoom 0–5, world)
   - ⬜ F5.1.2 Online tile fetch + disk cache (OpenStreetMap)
   - ⬜ F5.1.3 Map scheme switcher (Light/Dark/Radar/Naval, §4.1.1.3)
-- ⬜ **F5.2** Data point rendering on map
-  - ⬜ F5.2.1 Color-by field (§3.4.2)
-  - ⬜ F5.2.2 Transparency-by field (§3.4.3)
-  - ⬜ F5.2.3 Size-by field (§3.4.4)
+- ✅ **F5.2** Data point rendering on map
+  - ✅ F5.2.1 Color-by field (§3.4.2)
+  - ✅ F5.2.2 Transparency-by field (§3.4.3)
+  - ✅ F5.2.3 Size-by field (§3.4.4)
 - ⬜ **F5.3** Track/path rendering (connect points by time sequence)
-- ⬜ **F5.4** Hover tooltip (configurable fields, §3.4.5)
+- ✅ **F5.4** Hover tooltip (configurable fields, §3.4.5)
 - ⬜ **F5.5** Zoom & pan (§3.4.7)
 - ⬜ **F5.6** Point selection on map
   - ⬜ F5.6.1 Single click (§3.4.11.1)
@@ -106,8 +106,8 @@
 
 ### F6 — Scatter Plot
 - ✅ **F6.1** X/Y scatter with configurable axes (all field types; continuous + categorical)
-- ⬜ **F6.2** Color/size/transparency by field (§3.4.2–3.4.4)
-- ⬜ **F6.3** Hover tooltip (§3.4.5)
+- ✅ **F6.2** Color/size/transparency by field (§3.4.2–3.4.4)
+- ✅ **F6.3** Hover tooltip (§3.4.5)
 - ✅ **F6.4** Zoom/pan (§3.4.7)
 - ✅ **F6.5** Axis labels, limits, scale (linear/log, §3.4.8)
 - ⬜ **F6.6** Point selection (single, ctrl-click, area drag, §3.4.11.1–3)
@@ -128,12 +128,12 @@
 - ⬜ **F8.5** Multi-channel (multiple fields overlaid)
 
 ### F9 — Data Styling
-- ⬜ **F9.1** Conditional color rules (§3.4.2)
-  - ⬜ F9.1.1 Categorical (field = value → color)
-  - ⬜ F9.1.2 Continuous colormap (gradient by field value)
-- ⬜ **F9.2** Conditional transparency (§3.4.3)
-- ⬜ **F9.3** Conditional point size (§3.4.4)
-- ⬜ **F9.4** Configurable hover text fields (§3.4.5)
+- ✅ **F9.1** Conditional color rules (§3.4.2)
+  - ✅ F9.1.1 Categorical (field = value → color)
+  - ✅ F9.1.2 Continuous colormap (gradient by field value)
+- ✅ **F9.2** Conditional transparency (§3.4.3)
+- ✅ **F9.3** Conditional point size (§3.4.4)
+- ✅ **F9.4** Configurable hover text fields (§3.4.5)
 - ⬜ **F9.5** Data aggregation (§3.4.6)
   - ⬜ F9.5.1 Spatial binning (H3 hex or grid)
   - ⬜ F9.5.2 Temporal binning
@@ -181,9 +181,9 @@
 This is the sequence we follow. Each phase produces a usable, committable milestone.
 
 ```
-Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6 ──► Phase 7+
-Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
-            (CSV gen +
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6 ──► Phase 7 ──► Phase 8+
+Foundation  Test Data   Load CSV    Map Plot    Filters    Scatter+   Styling    ...etc
+            (CSV gen +                                      Filters
              UDP tool)
 ```
 
@@ -267,7 +267,7 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 | F5.1.3 | Map scheme switcher (2 schemes) | ✅ | OpenStreetMap (light) + Carto Dark Matter via `TileScheme` enum |
 | F5.2 | Data point rendering | ✅ | GPU quad mesh batching — one draw call per plot; viewport culling |
 | F5.5 | Zoom & pan | ✅ | Built into walkers Map widget (scroll wheel + drag) |
-| F5.4 | Hover tooltip | ⬜ | Deferred to Phase 8 (alongside selection) |
+| F5.4 | Hover tooltip | ✅ | Configurable fields; nearest-point lookup via screen-space positions stored in egui memory |
 | F12.4 | Performance menu | ✅ (partial) | Max Points/Plot setting with live DragValue; default 100K |
 | F14.3 | LOD rendering | ✅ (partial) | Stride subsampling when n > max_draw_points; viewport culling |
 
@@ -292,6 +292,8 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 | ID | Feature | Status | Notes |
 |---|---|---|---|
 | F6.1 | Scatter plot | ✅ | All fields; continuous + categorical axes with auto-detection |
+| F6.2 | Color/size/transparency by field | ✅ | Three render paths (solid/categorical/continuous); size + alpha by column |
+| F6.3 | Hover tooltip | ✅ | Nearest-point lookup; configurable extra fields; coordinates_formatter for background coords |
 | F6.4 | Scatter zoom/pan | ✅ | egui_plot built-in + boxed zoom |
 | F6.5 | Axis labels/limits | ✅ | Axis labels; categorical tick formatters; auto-bounds |
 | F3.1 | Attribute filter | ✅ | =, ≠, >, ≥, <, ≤, in, not-in; numeric + string + set |
@@ -310,17 +312,28 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 
 ---
 
-### Phase 7 — Data Styling ⬜
-*Goal: Color/size/transparency by field value; hover customization.*
+### Phase 7 — Data Styling ✅
+*Goal: Color/size/transparency by field value; hover customization. Both map and scatter plots support identical styling features.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F9.1 | Conditional color | ⬜ | Categorical + continuous colormap |
-| F9.2 | Conditional transparency | ⬜ | |
-| F9.3 | Conditional point size | ⬜ | |
-| F9.4 | Configurable hover text | ⬜ | |
+| F9.1 | Conditional color | ✅ | Solid / Categorical (12-color palette) / Continuous (5 colormaps: Viridis, Plasma, Inferno, Turbo, Grayscale) |
+| F9.2 | Conditional transparency | ✅ | Per-point alpha by column with configurable min/max range |
+| F9.3 | Conditional point size | ✅ | Per-point radius by column with configurable min/max px |
+| F9.4 | Configurable hover text | ✅ | Lat/lon or x/y always shown; extra fields via checklist in configure dialog |
+| — | Right legend pane | ✅ | Per-plot collapsible cards; color/size/alpha legends; gradient bar for continuous |
+| — | Map circles | ✅ | Map points render as circles (not squares); per-point radius support |
 
-**Exit criteria:** User can color map points by altitude (gradient), set size by speed.
+**Exit criteria:** User can color map points by altitude (gradient), set size by speed, configure hover fields. ✅
+
+**Implementation notes:**
+- `src/plot/colormap.rs`: 8-knot RGB LUT per colormap, linear interpolation via `eval()`, `sample_gradient()` for legend bars
+- `src/plot/styling.rs`: `compute_colors()` / `compute_radii()` / `compute_alphas()` — shared between map and scatter; `PlotLegendData` computed at sync time
+- `src/ui/right_pane.rs`: `RightPane` with collapsible cards per plot; continuous legend draws 64-step gradient bar
+- Scatter: 3 render paths — Solid (native `Points` series), Categorical (one series per category), Continuous (painter circles + manual `show_tooltip_at_pointer`)
+- Map: `PointsPlugin` draws `circle_filled()` per point; screen positions stored in egui temp memory for hover lookup
+- Hover labels pre-computed at `sync_data` time; hover field columns pre-extracted once (not per-row) to avoid O(N*M) column lookups
+- `ColorMode`, `SizeConfig`, `AlphaConfig`, `hover_fields` on both `MapPlotConfig` and `ScatterPlotConfig`
 
 ---
 
@@ -439,3 +452,5 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 | 2026-04-06 | Phase 6 | Scatter plot with all-field support, continuous + categorical axes, in-plot ⚙ configure dialog for both scatter and map plots |
 | 2026-04-06 | Phase 6 | Attribute filters: 8 operators including In/NotIn with pipe-separated set storage; value picker with chips (comparison) and checkbox list (set ops); distinct_values helper |
 | 2026-04-09 | Phase 6 | Phase marked complete; roadmap and functional tree updated |
+| 2026-04-10 | Phase 7 | Data styling: color modes (solid/categorical/continuous), 5 colormaps, per-point size + alpha by column, configurable hover tooltips, right legend pane with collapsible per-plot cards |
+| 2026-04-10 | Phase 7 | Map plot parity: circles instead of squares, per-point size/alpha/hover, same configure dialog features as scatter |
