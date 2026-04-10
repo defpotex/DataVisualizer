@@ -367,14 +367,17 @@ src/
 │   ├── add_plot_dialog.rs   # Floating modal for creating plots (Phase 5)
 │   ├── plot_area.rs         # Hosts PlotGrid, shows empty/has-sources/has-plots states
 │   ├── plot_grid.rs         # Responsive 1–2 column grid of plot cells (Phase 5)
+│   ├── right_pane.rs        # Legend pane — per-plot collapsible cards with color/size/alpha legends
 │   └── playback_bar.rs      # Playback controls (§3.5) [future]
 ├── plot/
 │   ├── mod.rs
 │   ├── map_plot.rs          # Geographic map (walkers 0.53 HttpTiles + Plugin trait)
-│   ├── scatter_plot.rs      # X/Y scatter (egui_plot) [future]
+│   ├── scatter_plot.rs      # X/Y scatter (egui_plot)
+│   ├── colormap.rs          # 5 colormaps (Viridis, Plasma, Inferno, Turbo, Grayscale) — 8-knot RGB LUTs
+│   ├── styling.rs           # compute_colors/radii/alphas, PlotLegendData, categorical palette
 │   ├── bar_plot.rs          # Bar chart (egui_plot) [future]
 │   ├── scroll_chart.rs      # Streaming scroll chart (egui_plot) [future]
-│   └── plot_config.rs       # PlotConfig enum, MapPlotConfig, TileScheme (serde)
+│   └── plot_config.rs       # PlotConfig enum, MapPlotConfig, ScatterPlotConfig, ColorMode, SizeConfig, AlphaConfig
 ├── geo/
 │   ├── mod.rs
 │   ├── boundary.rs          # Load/parse GeoJSON, SHP boundaries
@@ -411,3 +414,5 @@ These existing tools inform design decisions and UX patterns:
 | 0.4 | 2026-04-05 | Phases 2–4: ADS-B fetcher, UDP streamer, CSV loading, source panel with schema detection |
 | 0.5 | 2026-04-05 | Phase 5: Map plot implemented. Added `src/plot/` module (`plot_config.rs`, `map_plot.rs`), `src/ui/add_plot_dialog.rs`, `src/ui/plot_grid.rs`. Upgraded egui/eframe 0.29→0.34, walkers pinned to 0.53. `PlotConfig` enum enables future scatter/bar/scroll plot types. `AppState` now tracks `plots: Vec<PlotConfig>`. |
 | 0.6 | 2026-04-05 | Phase 5 polish: GPU quad mesh point rendering in `PointsPlugin` (single `Shape::mesh` draw call replaces N `circle_filled` calls). Iterative collision resolution in `PlotManager`. `PerformanceSettings` in `AppState` + Performance menu DragValue. `app_style: egui::Style` cached on app struct and re-applied each frame to keep dark theme in all egui popup Areas. Added `src/state/perf_settings.rs`. |
+| 0.7 | 2026-04-06 | Phase 6: Scatter plot (all-field, continuous+categorical axes, ⚙ configure dialog). Attribute filters (8 operators, value picker, chips). |
+| 0.8 | 2026-04-10 | Phase 7: Data styling for both map and scatter. `src/plot/colormap.rs` (5 colormaps, 8-knot LUTs). `src/plot/styling.rs` (shared compute_colors/radii/alphas, PlotLegendData). `src/ui/right_pane.rs` (legend pane with collapsible cards, gradient bars). Map points now circles with per-point size/alpha/hover. Scatter: 3 render paths (solid=native series, categorical=per-category series, continuous=painter+manual tooltip). `ColorMode`/`SizeConfig`/`AlphaConfig`/`hover_fields` on both plot configs. Hover field columns pre-extracted at sync_data time for performance. |

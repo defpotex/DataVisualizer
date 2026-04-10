@@ -1,3 +1,4 @@
+use crate::data::filter::Filter;
 use crate::data::source::{DataSource, SourceId};
 use crate::plot::plot_config::PlotConfig;
 use crate::state::perf_settings::PerformanceSettings;
@@ -25,6 +26,12 @@ pub struct AppState {
     /// Monotonically increasing ID counter for new plots.
     plot_id_counter: usize,
 
+    /// Active attribute filters applied to all plots.
+    pub filters: Vec<Filter>,
+
+    /// Monotonically increasing ID counter for new filters.
+    filter_id_counter: usize,
+
     /// Sender cloned and handed to background loader threads.
     pub event_tx: Sender<DataEvent>,
     /// Receiver polled each frame in update().
@@ -49,6 +56,8 @@ impl Default for AppState {
             event_rx: rx,
             notifications: Vec::new(),
             perf: PerformanceSettings::default(),
+            filters: Vec::new(),
+            filter_id_counter: 0,
         }
     }
 }
@@ -89,6 +98,19 @@ impl AppState {
     /// Remove a source by ID.
     pub fn remove_source(&mut self, id: SourceId) {
         self.sources.retain(|s| s.id != id);
+    }
+
+    /// Allocate and return the next filter ID.
+    pub fn alloc_filter_id(&mut self) -> usize {
+        let id = self.filter_id_counter;
+        self.filter_id_counter += 1;
+        id
+    }
+
+    /// Returns true if any enabled filter has changed since last call
+    /// (currently unused — caller re-syncs on any filter mutation).
+    pub fn has_active_filters(&self) -> bool {
+        self.filters.iter().any(|f| f.enabled)
     }
 
     pub fn has_sources(&self) -> bool {

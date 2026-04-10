@@ -6,7 +6,7 @@ use std::path::PathBuf;
 pub type SourceId = usize;
 
 /// A loaded dataset — file metadata + schema + the actual data.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataSource {
     pub id: SourceId,
     /// Display label (filename stem)

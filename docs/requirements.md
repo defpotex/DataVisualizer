@@ -108,6 +108,7 @@ Vehicle Track/Telemetry Visualization Application
 - **User-selectable themes:** Allow users to switch between named color/layout themes (e.g. "Engineering Dark", "Light", "High Contrast", "Radar Green"). Theme controls colors, fonts, spacing, and panel proportions. Implementation should use a centralized `AppTheme` struct so themes are swappable at runtime with zero code changes elsewhere.
 
 - **Main Pane Status Bar"** Add a status bar at the bottom of the main window with some stats
+- - Loading... receiving, calculating...
 - **Rename Plot ID/Titles** Add option to reneame plot Titles to window or in left pane card
 
 
@@ -115,3 +116,16 @@ Vehicle Track/Telemetry Visualization Application
 ## Bugs to fix
 - Cant see slider in the Performance dropdown
 - Fix window stacking/performance
+- Right Pane (show/edit filters)
+- UI elements no separate thread
+- Grouping Filters together
+- Editing Filters
+- Show more, for legend
+- Ability to edit colors, particularly on categoricals
+- ability to create a filter based on legend selection
+- plot scale adjustments; dialog?
+- Map control - zoom with shift, zoom box
+- Add 'Ok' to 'Apply' and 'Cancel' in dialogs. Make those buttons always visible
+- Show scale values when plotting a lot of categoricals
+- when value is requested for tooltip, display 'null' or empty field. (Current behavior hides row)
+- size input - has min/max - should have option to tie to min/max value or min/max of dataset (default)
