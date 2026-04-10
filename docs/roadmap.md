@@ -60,8 +60,8 @@
   - ⬜ F2.6.3 Help documentation for boundary file format
 
 ### F3 — Filtering System
-- ⬜ **F3.1** Attribute filter (conditional on any data field, §3.4.1.1)
-  - ⬜ F3.1.1 Operators: `=`, `!=`, `>`, `<`, `>=`, `<=`, `contains`, `in`
+- ✅ **F3.1** Attribute filter (conditional on any data field, §3.4.1.1)
+  - ✅ F3.1.1 Operators: `=`, `≠`, `>`, `<`, `≥`, `≤`, `in`, `not in`
   - ⬜ F3.1.2 Multi-condition (AND/OR)
 - ⬜ **F3.2** Geographic boundary filter (§3.4.1.2)
   - ⬜ F3.2.1 Filter points inside/outside a loaded boundary
@@ -72,7 +72,7 @@
   - ⬜ F3.4.1 "Filter to selection" from plot selection
 - ⬜ **F3.5** Radial filter (§3.4.1.5)
   - ⬜ F3.5.1 Click point + enter radius → filter to nearby points
-- ⬜ **F3.6** Filter panel in left pane (add/remove/enable/disable filters)
+- ✅ **F3.6** Filter panel in left pane (add/remove/enable/disable filters)
 
 ### F4 — Plot Area & Layout
 - ⬜ **F4.1** Flexible plot grid (add/remove plots, drag-to-resize)
@@ -105,11 +105,11 @@
   - ⬜ F5.8.2 Color/aggregate data by boundary region (§4.1.2.1)
 
 ### F6 — Scatter Plot
-- ⬜ **F6.1** X/Y scatter with configurable axes
+- ✅ **F6.1** X/Y scatter with configurable axes (all field types; continuous + categorical)
 - ⬜ **F6.2** Color/size/transparency by field (§3.4.2–3.4.4)
 - ⬜ **F6.3** Hover tooltip (§3.4.5)
-- ⬜ **F6.4** Zoom/pan (§3.4.7)
-- ⬜ **F6.5** Axis labels, limits, scale (linear/log, §3.4.8)
+- ✅ **F6.4** Zoom/pan (§3.4.7)
+- ✅ **F6.5** Axis labels, limits, scale (linear/log, §3.4.8)
 - ⬜ **F6.6** Point selection (single, ctrl-click, area drag, §3.4.11.1–3)
 - ⬜ **F6.7** Right-click context menu (§3.4.10)
 
@@ -286,19 +286,27 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 
 ---
 
-### Phase 6 — Scatter Plot + Basic Filters ⬜
+### Phase 6 — Scatter Plot + Basic Filters ✅
 *Goal: Second plot type, plus attribute filtering.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F6.1 | Scatter plot | ⬜ | X/Y with configurable axes |
-| F6.4 | Scatter zoom/pan | ⬜ | |
-| F6.5 | Axis labels/limits | ⬜ | |
-| F3.1 | Attribute filter | ⬜ | Conditional on any field |
-| F3.6 | Filter panel | ⬜ | Left pane: add/remove/toggle filters |
-| F4.4 | Linked time axis | ⬜ | Scatter + map time-linked |
+| F6.1 | Scatter plot | ✅ | All fields; continuous + categorical axes with auto-detection |
+| F6.4 | Scatter zoom/pan | ✅ | egui_plot built-in + boxed zoom |
+| F6.5 | Axis labels/limits | ✅ | Axis labels; categorical tick formatters; auto-bounds |
+| F3.1 | Attribute filter | ✅ | =, ≠, >, ≥, <, ≤, in, not-in; numeric + string + set |
+| F3.6 | Filter panel | ✅ | Left pane: add/remove/toggle; value picker with chips + checkbox list |
+| F4.4 | Linked time axis | ⏸ | Deferred to Phase 9 alongside playback |
 
-**Exit criteria:** Scatter plot works; filter added in left pane updates both plots simultaneously.
+**Exit criteria:** Scatter plot works; filter added in left pane updates both plots simultaneously. ✅
+
+**Implementation notes:**
+- `AxisScale` enum (Continuous / Categorical) auto-inferred from `FieldKind`; user-overridable per-axis in configure dialog
+- Categorical columns encoded as integer indices; `x_axis_formatter` / `y_axis_formatter` display string labels on ticks
+- `distinct_values()` scans all sources for up to 100 unique sorted values — used by filter dialog value picker
+- `FilterOp::In` / `FilterOp::NotIn` store pipe-separated members in `Filter.value`; applied via per-candidate OR mask
+- In-plot `⚙` configure button on every plot toolbar; dialog pre-filled from current config; schema cached in each plot at sync time
+- `PlotWindowEvent` / `PlotAction` propagation: plot → PlotManager → PlotArea → app.rs; `ConfigChanged` updates `app_state.plots` and calls `sync_plot`
 
 ---
 
@@ -428,3 +436,6 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Styling    ...etc
 | 2026-04-05 | Phase 4 | CSV data loading: background thread, schema heuristics, source panel with field list, multi-file, remove |
 | 2026-04-05 | Phase 5 | Map plot: walkers tile map, Add Plot dialog, PlotGrid multi-plot layout, Carto Dark + OSM tile schemes, egui/eframe upgraded 0.29→0.34 |
 | 2026-04-05 | Phase 5 | Map plot polish: GPU mesh point rendering (1 draw call/plot), iterative N-body collision detection, snap-to-grid, dot grid background, Performance menu with configurable max points, dark theme popup fix |
+| 2026-04-06 | Phase 6 | Scatter plot with all-field support, continuous + categorical axes, in-plot ⚙ configure dialog for both scatter and map plots |
+| 2026-04-06 | Phase 6 | Attribute filters: 8 operators including In/NotIn with pipe-separated set storage; value picker with chips (comparison) and checkbox list (set ops); distinct_values helper |
+| 2026-04-09 | Phase 6 | Phase marked complete; roadmap and functional tree updated |

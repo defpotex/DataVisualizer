@@ -1,4 +1,5 @@
 use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig};
+use crate::plot::styling::PlotLegendData;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use crate::ui::plot_grid::{PlotAction, PlotManager};
@@ -34,6 +35,11 @@ impl PlotArea {
     /// Re-sync data for a single plot after its config changes.
     pub fn sync_plot(&mut self, id: usize, state: &AppState) {
         self.plot_manager.sync_plot(id, state);
+    }
+
+    /// Collect current legend data from all plots.
+    pub fn legend_data(&self) -> Vec<PlotLegendData> {
+        self.plot_manager.legend_data()
     }
 
     pub fn show_windows(

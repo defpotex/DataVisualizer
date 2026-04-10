@@ -4,3 +4,4 @@ pub mod left_pane;
 pub mod menu_bar;
 pub mod plot_area;
 pub mod plot_grid;
+pub mod right_pane;

@@ -176,8 +176,11 @@ impl AddPlotDialog {
                                 source_id: source.id,
                                 lat_col: numeric.get(self.lat_col_idx).map(|s| s.to_string()).unwrap_or_default(),
                                 lon_col: numeric.get(self.lon_col_idx).map(|s| s.to_string()).unwrap_or_default(),
-                                color_col: None,
                                 tile_scheme: self.tile_scheme.clone(),
+                                color_mode: Default::default(),
+                                size_config: None,
+                                alpha_config: None,
+                                hover_fields: Vec::new(),
                             }));
                             close = true;
                         }
@@ -216,9 +219,12 @@ impl AddPlotDialog {
                                 source_id: source.id,
                                 x_col,
                                 y_col,
-                                color_col: None,
                                 x_scale,
                                 y_scale,
+                                color_mode: Default::default(),
+                                size_config: None,
+                                alpha_config: None,
+                                hover_fields: Vec::new(),
                             }));
                             close = true;
                         }

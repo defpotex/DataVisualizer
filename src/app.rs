@@ -1,7 +1,7 @@
 use crate::data::loader::load_csv_async;
 use crate::state::app_state::AppState;
 use crate::theme::{AppTheme, ThemePreset};
-use crate::ui::{left_pane::LeftPane, menu_bar::MenuBar, plot_area::PlotArea};
+use crate::ui::{left_pane::LeftPane, menu_bar::MenuBar, plot_area::PlotArea, right_pane::RightPane};
 use crate::ui::plot_grid::PlotAction;
 use eframe::Storage;
 use egui::Context;
@@ -15,6 +15,7 @@ const STORAGE_KEY: &str = "datavisualizer_app_state";
 struct PersistentState {
     theme_preset: ThemePreset,
     left_pane_width: f32,
+    right_pane_visible: bool,
 }
 
 impl Default for PersistentState {
@@ -23,6 +24,7 @@ impl Default for PersistentState {
         Self {
             theme_preset: default_theme.preset,
             left_pane_width: default_theme.spacing.left_pane_default_width,
+            right_pane_visible: true,
         }
     }
 }
@@ -31,18 +33,17 @@ impl Default for PersistentState {
 
 pub struct DataVisualizerApp {
     theme: AppTheme,
-    /// Pre-computed egui Style for this theme; re-applied every frame so
-    /// popup/menu Areas (which create their own Ui) always inherit our visuals.
     app_style: egui::Style,
     left_pane_width: f32,
+    right_pane_visible: bool,
 
     app_state: AppState,
 
     menu_bar: MenuBar,
     left_pane: LeftPane,
     plot_area: PlotArea,
+    right_pane: RightPane,
 
-    /// Central panel rect from the previous frame — used to constrain plot windows.
     central_rect: egui::Rect,
 }
 
@@ -55,7 +56,6 @@ impl DataVisualizerApp {
 
         let theme = AppTheme::from_preset(persisted.theme_preset);
 
-        // Build cached style and apply at startup.
         let mut app_style = egui::Style::default();
         theme.apply_to_style(&mut app_style);
         cc.egui_ctx.set_global_style(app_style.clone());
@@ -65,11 +65,12 @@ impl DataVisualizerApp {
         Self {
             app_style,
             left_pane_width: persisted.left_pane_width,
+            right_pane_visible: persisted.right_pane_visible,
             app_state: AppState::default(),
             menu_bar: MenuBar::default(),
             left_pane: LeftPane::default(),
             plot_area: PlotArea::default(),
-            // Sensible default; overwritten after first frame's CentralPanel is shown.
+            right_pane: RightPane::default(),
             central_rect: egui::Rect::from_min_size(
                 egui::pos2(260.0, 28.0),
                 egui::vec2(1100.0, 860.0),
@@ -84,12 +85,9 @@ impl DataVisualizerApp {
         self.theme.apply_to_style(&mut self.app_style);
     }
 
-    /// Open a native file dialog and kick off an async CSV load.
     fn open_csv_dialog(&mut self) {
         let id = self.app_state.next_source_id();
         let tx = self.app_state.event_tx.clone();
-
-        // rfd file dialog — runs on a background thread so the UI stays live.
         std::thread::spawn(move || {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("CSV files", &["csv"])
@@ -103,26 +101,17 @@ impl DataVisualizerApp {
 }
 
 impl eframe::App for DataVisualizerApp {
-    /// eframe 0.34 requires `ui` as the primary trait method.
-    /// We override `update` instead (which gives us `ctx`), so this stub is never called.
+    /// eframe 0.34 requires `ui` as the primary trait method; we override `update` instead.
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Re-apply our theme every frame.  egui popup/menu Areas create their
-        // own Ui from ctx.global_style(), so we must ensure it stays set to our
-        // dark theme even if something internally resets it.
         ctx.set_global_style(self.app_style.clone());
 
-        // Drain background-thread events (new sources, errors).
-        // Only request a repaint when something actually arrived.
         if self.app_state.poll_events() {
             ctx.request_repaint();
         }
 
-        // Clone theme so closures can borrow self mutably without conflict.
         let theme = self.theme.clone();
-
-        // Collect actions from panels — handle after all panels are drawn.
         let mut menu_action: Option<MenuAction> = None;
         let mut pane_action: Option<PaneAction> = None;
 
@@ -130,8 +119,22 @@ impl eframe::App for DataVisualizerApp {
         egui::Panel::top("menu_bar")
             .frame(menu_bar_frame(&theme))
             .show(ctx, |ui| {
-                menu_action = self.menu_bar.show(ui, &theme, &mut self.app_state.perf);
+                menu_action = self.menu_bar.show(ui, &theme, &mut self.app_state.perf, self.right_pane_visible);
             });
+
+        // ── Right pane (legends) — must come before CentralPanel ──────────────
+        if self.right_pane_visible {
+            egui::Panel::right("right_pane")
+                .resizable(true)
+                .default_width(200.0)
+                .min_width(140.0)
+                .max_width(400.0)
+                .frame(side_panel_frame(&theme))
+                .show(ctx, |ui| {
+                    let legends = self.plot_area.legend_data();
+                    self.right_pane.show(ui, &theme, &legends);
+                });
+        }
 
         // ── Left pane ─────────────────────────────────────────────────────────
         egui::Panel::left("left_pane")
@@ -146,7 +149,6 @@ impl eframe::App for DataVisualizerApp {
             });
 
         // ── Plot area (central panel) ─────────────────────────────────────────
-        // Capture the central rect so floating windows can be constrained to it.
         const GRID_SIZE: f32 = 40.0;
         let central_response = egui::CentralPanel::default()
             .frame(plot_area_frame(&theme))
@@ -155,14 +157,12 @@ impl eframe::App for DataVisualizerApp {
             });
         self.central_rect = central_response.response.rect;
 
-        // ── Floating plot windows (drawn after panels so constrain_to works) ──
-        // Windows float above panel contents but are bounded to the central rect.
+        // ── Floating plot windows ─────────────────────────────────────────────
         let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, self.app_state.perf.max_draw_points);
         for action in plot_actions {
             self.handle_plot_action(action);
         }
 
-        // Handle actions after all panels are drawn (avoids borrow conflicts)
         if let Some(a) = menu_action { self.handle_menu_action(a); }
         if let Some(a) = pane_action { self.handle_pane_action(a); }
     }
@@ -171,6 +171,7 @@ impl eframe::App for DataVisualizerApp {
         let state = PersistentState {
             theme_preset: self.theme.preset,
             left_pane_width: self.left_pane_width,
+            right_pane_visible: self.right_pane_visible,
         };
         eframe::set_value(storage, STORAGE_KEY, &state);
     }
@@ -178,12 +179,11 @@ impl eframe::App for DataVisualizerApp {
 
 // ── Action handling ───────────────────────────────────────────────────────────
 
-/// Actions returned from the menu bar that require app-level handling.
 pub enum MenuAction {
     OpenCsv,
+    ToggleLegendPane,
 }
 
-/// Actions returned from the left pane.
 pub enum PaneAction {
     OpenCsv,
     RemoveSource(usize),
@@ -198,6 +198,7 @@ impl DataVisualizerApp {
     fn handle_menu_action(&mut self, action: MenuAction) {
         match action {
             MenuAction::OpenCsv => self.open_csv_dialog(),
+            MenuAction::ToggleLegendPane => self.right_pane_visible = !self.right_pane_visible,
         }
     }
 
@@ -260,11 +261,9 @@ impl DataVisualizerApp {
             }
             PlotAction::ConfigChanged(new_config) => {
                 let id = new_config.id();
-                // Update the canonical config in app_state (for session persistence).
                 if let Some(p) = self.app_state.plots.iter_mut().find(|p| p.id() == id) {
                     *p = new_config;
                 }
-                // Re-sync data for the live plot instance.
                 self.plot_area.sync_plot(id, &self.app_state);
             }
         }

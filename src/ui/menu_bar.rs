@@ -8,7 +8,7 @@ pub struct MenuBar;
 
 impl MenuBar {
     /// Returns Some(MenuAction) if the user clicked something requiring app-level handling.
-    pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, perf: &mut PerformanceSettings) -> Option<MenuAction> {
+    pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, perf: &mut PerformanceSettings, right_pane_visible: bool) -> Option<MenuAction> {
         let mut action = None;
 
         ui.horizontal(|ui| {
@@ -45,6 +45,14 @@ impl MenuBar {
                     menu_entry_disabled(ui, "Configure Binning…", "", theme);
                     menu_entry_disabled(ui, "Spatial Aggregation…", "", theme);
                     menu_entry_disabled(ui, "Temporal Aggregation…", "", theme);
+                });
+
+                menu_item(ui, "View", theme, |ui| {
+                    let legend_label = if right_pane_visible { "✓ Show Legends" } else { "  Show Legends" };
+                    if menu_entry(ui, legend_label, "", theme) {
+                        action = Some(MenuAction::ToggleLegendPane);
+                        ui.close();
+                    }
                 });
 
                 menu_item(ui, "Performance", theme, |ui| {

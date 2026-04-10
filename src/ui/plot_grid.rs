@@ -3,6 +3,7 @@ use crate::data::source::{DataSource, SourceId};
 use crate::plot::map_plot::{snap_to_grid, MapPlot};
 use crate::plot::plot_config::{MapPlotConfig, PlotConfig, ScatterPlotConfig};
 use crate::plot::scatter_plot::{PlotWindowEvent, ScatterPlot};
+use crate::plot::styling::PlotLegendData;
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use egui::{Context, Rect, vec2};
@@ -60,6 +61,13 @@ impl ManagedPlot {
             Self::Scatter(p) => p.sync_data(&tmp),
         }
     }
+    fn legend_data(&self) -> Option<&PlotLegendData> {
+        match self {
+            Self::Map(p) => p.legend_data(),
+            Self::Scatter(p) => p.legend_data(),
+        }
+    }
+
     fn apply_config(&mut self, new_config: PlotConfig) {
         match (self, new_config) {
             (Self::Map(p), PlotConfig::Map(c)) => p.apply_config(c),
@@ -142,6 +150,11 @@ impl PlotManager {
 
     pub fn is_empty(&self) -> bool { self.plots.is_empty() }
     pub fn len(&self) -> usize { self.plots.len() }
+
+    /// Collect legend data from all plots (plots without synced data are skipped).
+    pub fn legend_data(&self) -> Vec<PlotLegendData> {
+        self.plots.iter().filter_map(|p| p.legend_data().cloned()).collect()
+    }
 
     /// Draw all plot windows. Returns actions for the caller to process.
     pub fn show_windows(
