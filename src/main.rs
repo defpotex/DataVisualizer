@@ -6,6 +6,9 @@ mod theme;
 mod ui;
 
 fn main() -> eframe::Result<()> {
+    // Enable puffin profiling (scoped macros are no-ops when this isn't called).
+    puffin::set_scopes_on(true);
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DataVisualizer")

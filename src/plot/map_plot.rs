@@ -7,7 +7,10 @@ use crate::plot::scatter_plot::PlotWindowEvent;
 use crate::plot::styling::{
     apply_alpha, compute_alphas, compute_colors, compute_radii, PlotLegendData,
 };
+use crate::plot::sync::{CancelToken, MapSyncResult};
+use crate::state::app_state::DataEvent;
 use crate::theme::AppTheme;
+use crossbeam_channel::Sender;
 use egui::{Color32, Context, Pos2, Rect, RichText, Ui, vec2};
 use polars::prelude::DataType;
 use std::collections::HashSet;
@@ -438,12 +441,23 @@ pub struct MapPlot {
     radii: Arc<Vec<f32>>,
     /// Per-point hover labels aligned with `points`.
     hover_labels: Arc<Vec<String>>,
+    /// Maps filtered point index → original DataFrame row index.
+    row_indices: Arc<Vec<usize>>,
     /// Cached schema for the configure dialog.
     cached_schema: Option<DataSchema>,
     /// Legend metadata.
     legend: Option<PlotLegendData>,
 
     configure_dialog: MapConfigDialog,
+
+    /// Context menu state (right-click).
+    context_menu_row: Option<usize>,
+    context_menu_pos: Option<Pos2>,
+
+    /// True while a background thread is computing plot data.
+    computing: bool,
+    /// Token to cancel a running background sync.
+    cancel_token: CancelToken,
 }
 
 impl MapPlot {
@@ -459,71 +473,68 @@ impl MapPlot {
             colors: Arc::new(Vec::new()),
             radii: Arc::new(Vec::new()),
             hover_labels: Arc::new(Vec::new()),
+            row_indices: Arc::new(Vec::new()),
             cached_schema: None,
             legend: None,
             configure_dialog: MapConfigDialog::default(),
+            context_menu_row: None,
+            context_menu_pos: None,
+            computing: false,
+            cancel_token: CancelToken::new(),
         }
     }
 
-    pub fn sync_data(&mut self, source: &DataSource) {
+    pub fn is_computing(&self) -> bool { self.computing }
+
+    /// Kick off data computation on a background thread.
+    pub fn sync_data_async(&mut self, source: &DataSource, tx: &Sender<DataEvent>) {
         self.cached_schema = Some(source.schema.clone());
-        let df = &source.df;
-        let n = df.height();
 
-        // Compute per-row colors (before filtering invalid lat/lon).
-        let solid_color = Color32::from_rgb(100, 180, 255); // placeholder; overridden at render if Solid
-        let (mut all_colors, color_legend) = compute_colors(df, &self.config.color_mode, solid_color, n);
+        // Cancel any previous in-flight computation.
+        self.cancel_token.cancel();
+        let token = CancelToken::new();
+        self.cancel_token = token.clone();
+        self.computing = true;
 
-        let base_radius = 3.0_f32;
-        let (all_radii, size_legend) = compute_radii(df, self.config.size_config.as_ref(), base_radius, n);
-        let base_alpha = 200.0 / 255.0;
-        let (all_alphas, alpha_legend) = compute_alphas(df, self.config.alpha_config.as_ref(), base_alpha, n);
-        apply_alpha(&mut all_colors, &all_alphas);
+        let plot_id = self.config.id;
+        let config = self.config.clone();
+        let schema = source.schema.clone();
+        let df = source.df.clone();
+        let tx = tx.clone();
 
-        // Pre-extract hover field columns once.
-        let hover_cols: Vec<(&str, Vec<Option<String>>)> = self.config.hover_fields.iter()
-            .filter_map(|field| {
-                let series = df.column(field).ok()?.as_series()?.clone();
-                let cast = series.cast(&DataType::String).ok()?;
-                let ca = cast.str().ok()?.clone();
-                let vals: Vec<Option<String>> = ca.into_iter().map(|v| v.map(|s| s.to_string())).collect();
-                Some((field.as_str(), vals))
-            })
-            .collect();
-
-        // Extract lat/lon and filter invalid rows, keeping colors/radii/labels aligned.
-        let all_lats = get_f64_vec(df, &self.config.lat_col).unwrap_or_else(|| vec![None; n]);
-        let all_lons = get_f64_vec(df, &self.config.lon_col).unwrap_or_else(|| vec![None; n]);
-
-        let mut pts: Vec<[f64; 2]> = Vec::new();
-        let mut colors: Vec<Color32> = Vec::new();
-        let mut radii: Vec<f32> = Vec::new();
-        let mut hover_labels_vec: Vec<String> = Vec::new();
-
-        for i in 0..n {
-            if let (Some(lat), Some(lon)) = (all_lats.get(i).copied().flatten(), all_lons.get(i).copied().flatten()) {
-                pts.push([lat, lon]);
-                colors.push(all_colors.get(i).copied().unwrap_or(solid_color));
-                radii.push(all_radii.get(i).copied().unwrap_or(base_radius));
-                hover_labels_vec.push(build_hover_label(
-                    i, lat, lon,
-                    &self.config,
-                    &hover_cols,
-                ));
+        std::thread::spawn(move || {
+            let result = compute_map_data(plot_id, &config, &schema, &df, &token);
+            match result {
+                Some(r) => {
+                    let _ = tx.send(DataEvent::PlotSyncReady(
+                        crate::plot::sync::PlotSyncEvent::MapReady(r),
+                    ));
+                }
+                None => {
+                    let _ = tx.send(DataEvent::PlotSyncReady(
+                        crate::plot::sync::PlotSyncEvent::Cancelled { plot_id },
+                    ));
+                }
             }
-        }
-
-        self.points = Arc::new(pts);
-        self.colors = Arc::new(colors);
-        self.radii = Arc::new(radii);
-        self.hover_labels = Arc::new(hover_labels_vec);
-        self.legend = Some(PlotLegendData {
-            plot_id: self.config.id,
-            plot_title: self.config.title.clone(),
-            color: color_legend,
-            size: size_legend,
-            alpha: alpha_legend,
         });
+    }
+
+    /// Apply a completed sync result from the background thread.
+    pub fn apply_sync_result(&mut self, result: MapSyncResult) {
+        self.cached_schema = Some(result.schema);
+        self.points = Arc::new(result.points);
+        self.colors = Arc::new(result.colors);
+        self.radii = Arc::new(result.radii);
+        self.hover_labels = Arc::new(result.hover_labels);
+        self.row_indices = Arc::new(result.row_indices);
+        self.legend = Some(result.legend);
+        self.computing = false;
+    }
+
+    /// Cancel any in-flight background sync.
+    pub fn cancel_sync(&mut self) {
+        self.cancel_token.cancel();
+        self.computing = false;
     }
 
     pub fn apply_config(&mut self, config: MapPlotConfig) {
@@ -556,8 +567,10 @@ impl MapPlot {
         central_rect: Rect,
         grid_size: f32,
         max_draw_points: usize,
+        _selection: Option<&crate::state::selection::SelectionSet>,
     ) -> PlotWindowEvent {
         if !self.is_open { return PlotWindowEvent::Closed; }
+        puffin::profile_function!();
 
         let c = &theme.colors;
         let s = &theme.spacing;
@@ -581,11 +594,27 @@ impl MapPlot {
 
         // For Solid mode, build a color vec using the theme accent.
         let solid_theme_color = c.accent_primary;
-        let display_colors = if matches!(self.config.color_mode, ColorMode::Solid) {
+        let mut display_colors = if matches!(self.config.color_mode, ColorMode::Solid) {
             Arc::new(vec![solid_theme_color; self.points.len()])
         } else {
             Arc::clone(&self.colors)
         };
+
+        // Apply selection dimming: unselected points get 30% alpha.
+        let has_selection = _selection.map_or(false, |s| !s.is_empty());
+        if has_selection {
+            let sel = _selection.unwrap();
+            let row_indices = &self.row_indices;
+            let dimmed: Vec<Color32> = display_colors.iter().enumerate().map(|(i, &c)| {
+                let row = row_indices.get(i).copied().unwrap_or(i);
+                if sel.contains(row) {
+                    c
+                } else {
+                    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * 0.3) as u8)
+                }
+            }).collect();
+            display_colors = Arc::new(dimmed);
+        }
 
         let mut win = egui::Window::new(
             RichText::new(&self.config.title)
@@ -605,25 +634,40 @@ impl MapPlot {
 
         if let Some(snapped_pos) = snap { win = win.current_pos(snapped_pos); }
 
+        let computing = self.computing;
+        let mut cancel_clicked = false;
         win.show(ctx, |ui| {
             ui.push_id(id, |ui| {
                 gear_clicked = show_toolbar(ui, &self.config, self.points.len(), theme);
                 ui.separator();
-                show_map(
-                    ui,
-                    &mut self.tiles,
-                    &mut self.map_memory,
-                    &self.config,
-                    Arc::clone(&self.points),
-                    display_colors,
-                    Arc::clone(&self.radii),
-                    Arc::clone(&self.hover_labels),
-                    theme,
-                    max_draw_points,
-                    id,
-                );
+                if computing {
+                    show_computing_overlay(ui, theme, &mut cancel_clicked);
+                } else {
+                    show_map(
+                        ui,
+                        &mut self.tiles,
+                        &mut self.map_memory,
+                        &self.config,
+                        Arc::clone(&self.points),
+                        display_colors,
+                        Arc::clone(&self.radii),
+                        Arc::clone(&self.hover_labels),
+                        Arc::clone(&self.row_indices),
+                        theme,
+                        max_draw_points,
+                        id,
+                        _selection,
+                        self.context_menu_row.is_some(),
+                    );
+                }
             });
         });
+        if cancel_clicked {
+            self.cancel_sync();
+        }
+        if self.computing {
+            ctx.request_repaint();
+        }
 
         if gear_clicked {
             if let Some(schema) = &self.cached_schema {
@@ -636,6 +680,130 @@ impl MapPlot {
         if let Some(schema) = &self.cached_schema.clone() {
             if let Some(new_config) = self.configure_dialog.show(ctx, &self.config, schema, theme) {
                 event = PlotWindowEvent::ConfigChanged(PlotConfig::Map(new_config));
+            }
+        }
+
+        // ── Handle selection interactions from show_map ──────────────────────
+        let interaction: Option<MapInteraction> = ctx.memory(|mem| {
+            mem.data.get_temp(egui::Id::new(("map_interaction", id)))
+        });
+        if let Some(inter) = interaction {
+            ctx.memory_mut(|mem| {
+                mem.data.remove::<MapInteraction>(egui::Id::new(("map_interaction", id)));
+            });
+
+            use crate::state::selection::SelectionSet;
+            let source_id = self.config.source_id;
+
+            match inter {
+                MapInteraction::Click { row, ctrl } => {
+                    if ctrl {
+                        let mut sel = _selection.cloned()
+                            .unwrap_or_else(|| SelectionSet::new(id, source_id));
+                        sel.plot_id = id;
+                        sel.source_id = source_id;
+                        sel.toggle(row);
+                        if sel.is_empty() {
+                            event = PlotWindowEvent::SelectionChanged(None);
+                        } else {
+                            event = PlotWindowEvent::SelectionChanged(Some(sel));
+                        }
+                    } else {
+                        event = PlotWindowEvent::SelectionChanged(
+                            Some(SelectionSet::single(id, source_id, row))
+                        );
+                    }
+                }
+                MapInteraction::ClearSelection => {
+                    if _selection.is_some() {
+                        event = PlotWindowEvent::SelectionChanged(None);
+                    }
+                }
+                MapInteraction::RightClick { row, screen_pos } => {
+                    self.context_menu_row = Some(row);
+                    self.context_menu_pos = Some(screen_pos);
+                }
+                MapInteraction::AreaSelect { rows, ctrl } => {
+                    if rows.is_empty() && !ctrl {
+                        event = PlotWindowEvent::SelectionChanged(None);
+                    } else if ctrl {
+                        // Ctrl+drag: add to existing selection.
+                        let mut sel = _selection.cloned()
+                            .unwrap_or_else(|| SelectionSet::new(id, source_id));
+                        sel.plot_id = id;
+                        sel.source_id = source_id;
+                        for row in rows { sel.indices.insert(row); }
+                        if sel.is_empty() {
+                            event = PlotWindowEvent::SelectionChanged(None);
+                        } else {
+                            event = PlotWindowEvent::SelectionChanged(Some(sel));
+                        }
+                    } else {
+                        event = PlotWindowEvent::SelectionChanged(
+                            Some(SelectionSet::from_indices(id, source_id, rows))
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Context menu ─────────────────────────────────────────────────────
+        if let Some(row) = self.context_menu_row {
+            let mut close_menu = false;
+            let menu_pos = self.context_menu_pos.unwrap_or(egui::pos2(100.0, 100.0));
+
+            let area_resp = egui::Area::new(egui::Id::new(("map_ctx_menu", id)))
+                .fixed_pos(menu_pos)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::default()
+                        .fill(c.bg_panel)
+                        .stroke(egui::Stroke::new(1.0, c.border))
+                        .corner_radius(egui::CornerRadius::from(4.0_f32))
+                        .inner_margin(egui::Margin::from(6.0_f32))
+                        .show(ui, |ui| {
+                            ui.set_min_width(160.0);
+                            ui.label(
+                                RichText::new(format!("Row {}", row))
+                                    .color(c.text_secondary)
+                                    .size(s.font_small),
+                            );
+                            ui.separator();
+
+                            if ui.button(RichText::new("Select Point").color(c.text_primary).size(s.font_body)).clicked() {
+                                use crate::state::selection::SelectionSet;
+                                event = PlotWindowEvent::SelectionChanged(
+                                    Some(SelectionSet::single(id, self.config.source_id, row))
+                                );
+                                close_menu = true;
+                            }
+
+                            if let Some(sel) = _selection {
+                                if !sel.is_empty() {
+                                    if ui.button(RichText::new(format!("Filter to Selection ({} pts)", sel.len())).color(c.text_primary).size(s.font_body)).clicked() {
+                                        event = PlotWindowEvent::FilterToSelection(sel.clone());
+                                        close_menu = true;
+                                    }
+                                }
+                            }
+
+                            if ui.button(RichText::new("Clear Selection").color(c.text_primary).size(s.font_body)).clicked() {
+                                event = PlotWindowEvent::SelectionChanged(None);
+                                close_menu = true;
+                            }
+
+                            if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
+                                close_menu = true;
+                            }
+                        });
+                });
+
+            // Close on button action, or on click outside the menu area.
+            let clicked_outside = ctx.input(|i| i.pointer.any_pressed())
+                && !area_resp.response.rect.contains(ctx.input(|i| i.pointer.hover_pos().unwrap_or(egui::pos2(-1.0, -1.0))));
+            if close_menu || clicked_outside {
+                self.context_menu_row = None;
+                self.context_menu_pos = None;
             }
         }
 
@@ -699,6 +867,127 @@ fn show_toolbar(ui: &mut Ui, config: &MapPlotConfig, point_count: usize, theme: 
     gear_clicked
 }
 
+// ── Computing overlay ────────────────────────────────────────────────────────
+
+fn show_computing_overlay(ui: &mut Ui, theme: &AppTheme, cancel_clicked: &mut bool) {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    let available = ui.available_size();
+    // Claim the full available space so the window doesn't shrink.
+    let (rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+    let center = rect.center();
+    ui.allocate_ui_at_rect(
+        egui::Rect::from_center_size(center, egui::vec2(200.0, 100.0)),
+        |ui| {
+            ui.vertical_centered(|ui| {
+                ui.spinner();
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Computing plot data...")
+                        .color(c.text_secondary)
+                        .size(s.font_body),
+                );
+                ui.add_space(12.0);
+                let btn = egui::Button::new(
+                    RichText::new("Cancel").color(c.text_primary).size(s.font_small),
+                )
+                .fill(c.widget_bg)
+                .stroke(egui::Stroke::new(1.0, c.border));
+                if ui.add(btn).clicked() {
+                    *cancel_clicked = true;
+                }
+            });
+        },
+    );
+}
+
+// ── Background computation ───────────────────────────────────────────────────
+
+/// Pure function that does all the expensive data extraction + styling work
+/// for a map plot.  Returns `None` if cancelled via `token`.
+fn compute_map_data(
+    plot_id: usize,
+    config: &MapPlotConfig,
+    schema: &DataSchema,
+    df: &polars::prelude::DataFrame,
+    token: &CancelToken,
+) -> Option<MapSyncResult> {
+    puffin::profile_function!();
+    let n = df.height();
+
+    let solid_color = Color32::from_rgb(100, 180, 255);
+    let (mut all_colors, color_legend, _cat_indices) = compute_colors(df, &config.color_mode, solid_color, n);
+    if token.is_cancelled() { return None; }
+
+    let base_radius = 3.0_f32;
+    let (all_radii, size_legend) = compute_radii(df, config.size_config.as_ref(), base_radius, n);
+    let base_alpha = 200.0 / 255.0;
+    let (all_alphas, alpha_legend) = compute_alphas(df, config.alpha_config.as_ref(), base_alpha, n);
+    apply_alpha(&mut all_colors, &all_alphas);
+    if token.is_cancelled() { return None; }
+
+    let hover_cols: Vec<(String, Vec<Option<String>>)> = config.hover_fields.iter()
+        .filter_map(|field| {
+            let series = df.column(field).ok()?.as_series()?.clone();
+            let cast = series.cast(&DataType::String).ok()?;
+            let ca = cast.str().ok()?.clone();
+            let vals: Vec<Option<String>> = ca.into_iter().map(|v| v.map(|s| s.to_string())).collect();
+            Some((field.clone(), vals))
+        })
+        .collect();
+
+    let orig_row_indices: Vec<usize> = df.column(crate::data::filter::ORIG_ROW_COL)
+        .ok()
+        .and_then(|c| c.as_series().map(|s| s.clone()))
+        .and_then(|s| s.u64().ok().map(|ca| {
+            ca.into_iter().map(|v| v.unwrap_or(0) as usize).collect()
+        }))
+        .unwrap_or_else(|| (0..n).collect());
+
+    if token.is_cancelled() { return None; }
+
+    let all_lats = get_f64_vec(df, &config.lat_col).unwrap_or_else(|| vec![None; n]);
+    let all_lons = get_f64_vec(df, &config.lon_col).unwrap_or_else(|| vec![None; n]);
+
+    let mut pts: Vec<[f64; 2]> = Vec::new();
+    let mut colors: Vec<Color32> = Vec::new();
+    let mut radii: Vec<f32> = Vec::new();
+    let mut hover_labels_vec: Vec<String> = Vec::new();
+    let mut row_idx_vec: Vec<usize> = Vec::new();
+
+    for i in 0..n {
+        if i % 50_000 == 0 && token.is_cancelled() { return None; }
+        if let (Some(lat), Some(lon)) = (all_lats.get(i).copied().flatten(), all_lons.get(i).copied().flatten()) {
+            pts.push([lat, lon]);
+            colors.push(all_colors.get(i).copied().unwrap_or(solid_color));
+            radii.push(all_radii.get(i).copied().unwrap_or(base_radius));
+            hover_labels_vec.push(build_hover_label(
+                i, lat, lon,
+                config,
+                &hover_cols,
+            ));
+            row_idx_vec.push(orig_row_indices.get(i).copied().unwrap_or(i));
+        }
+    }
+
+    Some(MapSyncResult {
+        plot_id,
+        schema: schema.clone(),
+        points: pts,
+        colors,
+        radii,
+        hover_labels: hover_labels_vec,
+        row_indices: row_idx_vec,
+        legend: PlotLegendData {
+            plot_id,
+            plot_title: config.title.clone(),
+            color: color_legend,
+            size: size_legend,
+            alpha: alpha_legend,
+        },
+    })
+}
+
 // ── Map widget ────────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -711,9 +1000,12 @@ fn show_map(
     colors: Arc<Vec<Color32>>,
     radii: Arc<Vec<f32>>,
     hover_labels: Arc<Vec<String>>,
+    row_indices: Arc<Vec<usize>>,
     theme: &AppTheme,
     max_draw_points: usize,
     plot_id: usize,
+    selection: Option<&crate::state::selection::SelectionSet>,
+    context_menu_open: bool,
 ) {
     if tiles.is_none() {
         *tiles = Some(make_tiles(&config.tile_scheme, ui.ctx().clone()));
@@ -722,56 +1014,203 @@ fn show_map(
     let center = compute_center(&points);
     let tile_ref: &mut dyn Tiles = tiles.as_mut().unwrap();
 
-    let map_response = ui.add(
-        Map::new(Some(tile_ref), map_memory, center)
-            .with_plugin(PointsPlugin {
-                points: Arc::clone(&points),
-                colors,
-                radii: Arc::clone(&radii),
-                max_draw_points,
-                plot_id,
-            }),
-    );
+    // Disable default left-drag panning so we can use plain drag for area selection.
+    // Shift+drag panning is handled manually after the map renders.
+    let map_result = Map::new(Some(tile_ref), map_memory, center)
+        .drag_pan_buttons(egui::DragPanButtons::EXTRA_2)
+        .with_plugin(PointsPlugin {
+            points: Arc::clone(&points),
+            colors,
+            radii: Arc::clone(&radii),
+            max_draw_points,
+            plot_id,
+        })
+        .show(ui, |_ui, _response, _projector, _mem| {});
 
-    // Hover tooltip: find nearest point to cursor within the map area.
+    let map_response = &map_result.response;
+    let map_rect = map_response.rect;
+
+    // Retrieve screen positions stored by the plugin.
+    let screen_pts: Vec<(Pos2, f32, usize)> = ui.ctx().memory(|mem| {
+        mem.data.get_temp(egui::Id::new(("map_screen_pts", plot_id)))
+            .unwrap_or_default()
+    });
+
+    // ── Selection highlight: draw white rings around selected points ─────
+    let has_selection = selection.map_or(false, |s| !s.is_empty());
+    if has_selection && !screen_pts.is_empty() {
+        let sel = selection.unwrap();
+        let painter = ui.painter().with_clip_rect(map_response.rect);
+        for &(pos, radius, idx) in &screen_pts {
+            let row = row_indices.get(idx).copied().unwrap_or(idx);
+            if sel.contains(row) {
+                painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+            }
+        }
+    }
+
+    // ── Find nearest point helper ────────────────────────────────────────
+    let find_nearest = |pos: Pos2| -> Option<usize> {
+        let mut best_idx = None;
+        let mut best_dist = f32::MAX;
+        for &(pt_pos, radius, idx) in &screen_pts {
+            let dist = pt_pos.distance(pos);
+            if dist <= radius + 10.0 && dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(idx);
+            }
+        }
+        best_idx
+    };
+
+    let mut interaction: Option<MapInteraction> = None;
+
+    // Hover tooltip (suppressed when context menu is open).
+    if !context_menu_open && !ui.input(|i| i.pointer.secondary_down()) {
     if let Some(hover_pos) = map_response.hover_pos() {
-        // We need to project points to screen space to find nearest.
-        // Re-create a projector from the map memory and response rect.
-        // Since walkers doesn't expose the projector outside the plugin,
-        // we store screen positions in the plugin and retrieve them via egui's memory.
-        let screen_pts: Vec<(Pos2, f32, usize)> = ui.ctx().memory(|mem| {
-            mem.data.get_temp(egui::Id::new(("map_screen_pts", plot_id)))
-                .unwrap_or_default()
-        });
-
         if !screen_pts.is_empty() {
-            let nearest = screen_pts.iter()
-                .min_by(|a, b| {
-                    a.0.distance(hover_pos).partial_cmp(&b.0.distance(hover_pos))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            if let Some(&(pos, radius, idx)) = nearest {
-                if pos.distance(hover_pos) <= radius + 10.0 {
-                    if let Some(label) = hover_labels.get(idx) {
-                        if !label.is_empty() {
-                            // Highlight the hovered point.
-                            let painter = ui.painter().with_clip_rect(map_response.rect);
-                            painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+            if let Some(idx) = find_nearest(hover_pos) {
+                if let Some(label) = hover_labels.get(idx) {
+                    if !label.is_empty() {
+                        let (pos, radius, _) = *screen_pts.iter().find(|p| p.2 == idx).unwrap();
+                        let painter = ui.painter().with_clip_rect(map_response.rect);
+                        painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
 
-                            egui::show_tooltip_at_pointer(
-                                ui.ctx(),
-                                egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("map_tip_layer")),
-                                egui::Id::new(("map_tip", plot_id)),
-                                |ui: &mut egui::Ui| {
-                                    ui.label(RichText::new(label).size(theme.spacing.font_body));
-                                },
-                            );
-                        }
+                        egui::show_tooltip_at_pointer(
+                            ui.ctx(),
+                            egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("map_tip_layer")),
+                            egui::Id::new(("map_tip", plot_id)),
+                            |ui: &mut egui::Ui| {
+                                ui.label(RichText::new(label).size(theme.spacing.font_body));
+                            },
+                        );
                     }
                 }
             }
         }
     }
+    }
+
+    // ── Click / Ctrl+click / Right-click interaction ─────────────────────
+    if map_response.clicked() {
+        if let Some(pos) = map_response.interact_pointer_pos() {
+            if let Some(pt_idx) = find_nearest(pos) {
+                let row = row_indices.get(pt_idx).copied().unwrap_or(pt_idx);
+                let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                interaction = Some(MapInteraction::Click { row, ctrl });
+            } else {
+                interaction = Some(MapInteraction::ClearSelection);
+            }
+        }
+    }
+
+    if map_response.secondary_clicked() {
+        if let Some(pos) = map_response.interact_pointer_pos() {
+            if let Some(pt_idx) = find_nearest(pos) {
+                let row = row_indices.get(pt_idx).copied().unwrap_or(pt_idx);
+                interaction = Some(MapInteraction::RightClick { row, screen_pos: pos });
+            }
+        }
+    }
+
+    // ── Drag interactions ────────────────────────────────────────────────
+    let drag_key = egui::Id::new(("map_drag_start", plot_id));
+    let shift_held = ui.input(|i| i.modifiers.shift);
+
+    // Shift+drag = pan (manually, since we disabled walkers' left-drag pan).
+    if shift_held && map_response.dragged_by(egui::PointerButton::Primary) {
+        let delta = map_response.drag_delta();
+        if delta.length() > 0.5 {
+            // Create a projector to convert screen delta to geo coordinates.
+            let projector = walkers::Projector::new(map_rect, map_memory, center);
+            let rect_center = map_rect.center();
+            // Unproject the center, and the center minus the drag delta.
+            let offset_screen = egui::vec2(rect_center.x - delta.x, rect_center.y - delta.y);
+            let new_geo = projector.unproject(offset_screen);
+            map_memory.center_at(new_geo);
+        }
+    }
+
+    // Plain drag (no shift) = area selection rectangle.
+    // Record press position immediately on mouse-down so the rectangle starts
+    // exactly where the user clicked (not after egui's drag-threshold delay).
+    let press_key = egui::Id::new(("map_press_start", plot_id));
+    if !shift_held && ui.input(|i| i.pointer.any_pressed()) {
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            if map_response.rect.contains(pos) {
+                ui.ctx().memory_mut(|mem| {
+                    mem.data.insert_temp::<Pos2>(press_key, pos);
+                });
+            }
+        }
+    }
+    // Promote press to drag start once egui recognises the drag gesture.
+    if !shift_held && map_response.dragged_by(egui::PointerButton::Primary) {
+        let have_drag: bool = ui.ctx().memory(|mem| mem.data.get_temp::<Pos2>(drag_key).is_some());
+        if !have_drag {
+            let origin: Option<Pos2> = ui.ctx().memory(|mem| mem.data.get_temp(press_key));
+            if let Some(pos) = origin {
+                ui.ctx().memory_mut(|mem| {
+                    mem.data.insert_temp::<Pos2>(drag_key, pos);
+                });
+            }
+        }
+    }
+    // Clean up press position on release.
+    if ui.input(|i| i.pointer.any_released()) {
+        ui.ctx().memory_mut(|mem| { mem.data.remove::<Pos2>(press_key); });
+    }
+
+    let drag_start: Option<Pos2> = ui.ctx().memory(|mem| mem.data.get_temp(drag_key));
+    if let Some(start) = drag_start {
+        if let Some(current) = ui.input(|i| i.pointer.hover_pos()) {
+            let sel_rect = Rect::from_two_pos(start, current);
+            let painter = ui.painter().with_clip_rect(map_response.rect);
+            painter.rect_filled(
+                sel_rect, 0.0,
+                Color32::from_rgba_unmultiplied(100, 180, 255, 40),
+            );
+            painter.rect_stroke(
+                sel_rect, 0.0,
+                egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(100, 180, 255, 180)),
+                egui::StrokeKind::Outside,
+            );
+        }
+
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some(end) = ui.input(|i| i.pointer.hover_pos()) {
+                let sel_rect = Rect::from_two_pos(start, end);
+                let mut selected_rows: Vec<usize> = Vec::new();
+                for &(pos, _, idx) in &screen_pts {
+                    if sel_rect.contains(pos) {
+                        let row = row_indices.get(idx).copied().unwrap_or(idx);
+                        selected_rows.push(row);
+                    }
+                }
+                let ctrl = ui.input(|i| i.modifiers.ctrl);
+                interaction = Some(MapInteraction::AreaSelect { rows: selected_rows, ctrl });
+            }
+            ui.ctx().memory_mut(|mem| {
+                mem.data.remove::<Pos2>(drag_key);
+            });
+        }
+    }
+
+    // Store interaction for show_as_window to pick up.
+    if let Some(inter) = interaction {
+        ui.ctx().memory_mut(|mem| {
+            mem.data.insert_temp(egui::Id::new(("map_interaction", plot_id)), inter);
+        });
+    }
+}
+
+/// Interaction events produced by show_map for show_as_window to consume.
+#[derive(Clone, Debug)]
+enum MapInteraction {
+    Click { row: usize, ctrl: bool },
+    ClearSelection,
+    RightClick { row: usize, screen_pos: Pos2 },
+    AreaSelect { rows: Vec<usize>, ctrl: bool },
 }
 
 // ── Plugin: draw data points ──────────────────────────────────────────────────
@@ -802,7 +1241,8 @@ impl walkers::Plugin for PointsPlugin {
         let painter = ui.painter().with_clip_rect(rect);
 
         // Collect screen positions for hover detection (stored in egui memory).
-        let mut screen_pts: Vec<(Pos2, f32, usize)> = Vec::new();
+        let sampled_count = n / step;
+        let mut screen_pts: Vec<(Pos2, f32, usize)> = Vec::with_capacity(sampled_count);
 
         for (i, [lat, lon]) in self.points.iter().enumerate().step_by(step) {
             let r = self.radii.get(i).copied().unwrap_or(default_radius);
@@ -839,7 +1279,7 @@ fn build_hover_label(
     lat: f64,
     lon: f64,
     config: &MapPlotConfig,
-    hover_cols: &[(&str, Vec<Option<String>>)],
+    hover_cols: &[(String, Vec<Option<String>>)],
 ) -> String {
     let mut label = format!(
         "{}: {}\n{}: {}",

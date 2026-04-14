@@ -13,7 +13,10 @@
       "Bash(grep -v \"^.*//.*\")",
       "Bash(cargo tree:*)",
       "Bash(cargo metadata:*)",
-      "Bash(python -c \"import sys, json; data=json.load\\(sys.stdin\\); pkg=[p for p in data['packages'] if p['name']=='egui_plot'][0]; print\\('egui_plot deps:', [\\(d['name'],d['req']\\) for d in pkg['dependencies'] if 'egui' in d['name'] or 'emath' in d['name']]\\)\")"
+      "Bash(python -c \"import sys, json; data=json.load\\(sys.stdin\\); pkg=[p for p in data['packages'] if p['name']=='egui_plot'][0]; print\\('egui_plot deps:', [\\(d['name'],d['req']\\) for d in pkg['dependencies'] if 'egui' in d['name'] or 'emath' in d['name']]\\)\")",
+      "Bash(grep -r \"from_rgba_unmultiplied\" ~/.cargo/registry/src/*/egui-0.*/src/color32.rs)",
+      "Bash(cargo remove:*)",
+      "Bash(cargo install:*)"
     ]
   }
 }

@@ -2,6 +2,7 @@ use crate::plot::colormap::eval as colormap_eval;
 use crate::plot::plot_config::{AlphaConfig, ColorMode, Colormap, SizeConfig};
 use egui::Color32;
 use polars::prelude::{DataFrame, DataType};
+use std::collections::HashMap;
 
 // ── Categorical palette ───────────────────────────────────────────────────────
 
@@ -69,21 +70,26 @@ pub struct PlotLegendData {
 // ── Color computation ─────────────────────────────────────────────────────────
 
 /// Compute per-row colors for `n` rows from a DataFrame according to `mode`.
-/// Returns (colors, legend_metadata). Colors are fully opaque (alpha=255).
+/// Returns (colors, legend_metadata, category_indices). Colors are fully opaque (alpha=255).
 /// Caller is responsible for applying alpha afterward.
+/// `category_indices` is non-empty only for Categorical mode.
 pub fn compute_colors(
     df: &DataFrame,
     mode: &ColorMode,
     solid_color: Color32,
     n: usize,
-) -> (Vec<Color32>, ColorLegend) {
+) -> (Vec<Color32>, ColorLegend, Vec<Option<usize>>) {
+    puffin::profile_function!();
     match mode {
         ColorMode::Solid => {
             let c = Color32::from_rgb(solid_color.r(), solid_color.g(), solid_color.b());
-            (vec![c; n], ColorLegend::Solid { color: solid_color })
+            (vec![c; n], ColorLegend::Solid { color: solid_color }, Vec::new())
         }
         ColorMode::Categorical { col } => compute_categorical_colors(df, col, n, solid_color),
-        ColorMode::Continuous { col, colormap } => compute_continuous_colors(df, col, colormap, n, solid_color),
+        ColorMode::Continuous { col, colormap } => {
+            let (colors, legend) = compute_continuous_colors(df, col, colormap, n, solid_color);
+            (colors, legend, Vec::new())
+        }
     }
 }
 
@@ -92,13 +98,14 @@ fn compute_categorical_colors(
     col: &str,
     n: usize,
     fallback: Color32,
-) -> (Vec<Color32>, ColorLegend) {
+) -> (Vec<Color32>, ColorLegend, Vec<Option<usize>>) {
     let series = match df.column(col).ok().and_then(|c| c.as_series()).map(|s| s.clone()) {
         Some(s) => s,
         None => {
             return (
                 vec![Color32::from_rgb(fallback.r(), fallback.g(), fallback.b()); n],
                 ColorLegend::Solid { color: fallback },
+                Vec::new(),
             );
         }
     };
@@ -110,23 +117,29 @@ fn compute_categorical_colors(
             return (
                 vec![Color32::from_rgb(fallback.r(), fallback.g(), fallback.b()); n],
                 ColorLegend::Solid { color: fallback },
+                Vec::new(),
             );
         }
     };
 
     // Build ordered label → color mapping on first-seen order.
+    // Uses HashMap for O(1) lookup instead of O(k) linear scan per row.
     let mut order: Vec<String> = Vec::new();
+    let mut label_to_idx: HashMap<String, usize> = HashMap::new();
+    let mut cat_indices: Vec<Option<usize>> = Vec::with_capacity(n);
     let colors: Vec<Color32> = ca
         .into_iter()
         .map(|opt| {
             let s = opt.unwrap_or("(null)");
-            let idx = if let Some(pos) = order.iter().position(|l| l == s) {
+            let idx = if let Some(&pos) = label_to_idx.get(s) {
                 pos
             } else {
                 let pos = order.len();
+                label_to_idx.insert(s.to_string(), pos);
                 order.push(s.to_string());
                 pos
             };
+            cat_indices.push(Some(idx));
             categorical_color(idx)
         })
         .collect();
@@ -137,7 +150,7 @@ fn compute_categorical_colors(
         .map(|(i, lbl)| (lbl.clone(), categorical_color(i)))
         .collect();
 
-    (colors, ColorLegend::Categorical { col: col.to_string(), entries })
+    (colors, ColorLegend::Categorical { col: col.to_string(), entries }, cat_indices)
 }
 
 fn compute_continuous_colors(

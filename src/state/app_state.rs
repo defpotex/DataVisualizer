@@ -1,7 +1,9 @@
 use crate::data::filter::Filter;
 use crate::data::source::{DataSource, SourceId};
 use crate::plot::plot_config::PlotConfig;
+use crate::plot::sync::PlotSyncEvent;
 use crate::state::perf_settings::PerformanceSettings;
+use crate::state::selection::SelectionSet;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 /// Events sent from background threads to the UI thread.
@@ -10,6 +12,8 @@ pub enum DataEvent {
     Loaded(DataSource),
     /// A load failed — show an error in the UI.
     LoadError { id: SourceId, message: String },
+    /// A plot's background data sync completed.
+    PlotSyncReady(PlotSyncEvent),
 }
 
 /// Central application state — owned by DataVisualizerApp, read by all UI modules.
@@ -42,6 +46,9 @@ pub struct AppState {
 
     /// User-tunable performance settings.
     pub perf: PerformanceSettings,
+
+    /// Currently active point selection (global — one at a time).
+    pub selection: Option<SelectionSet>,
 }
 
 impl Default for AppState {
@@ -58,6 +65,7 @@ impl Default for AppState {
             perf: PerformanceSettings::default(),
             filters: Vec::new(),
             filter_id_counter: 0,
+            selection: None,
         }
     }
 }
@@ -78,9 +86,11 @@ impl AppState {
     }
 
     /// Drain all pending events from background threads.
-    /// Returns `true` if at least one event was received (caller should request repaint).
-    pub fn poll_events(&mut self) -> bool {
+    /// Returns (`had_events`, `sync_events`).  The caller should request repaint
+    /// if `had_events` is true and route `sync_events` to `PlotManager`.
+    pub fn poll_events(&mut self) -> (bool, Vec<PlotSyncEvent>) {
         let mut got_event = false;
+        let mut sync_events: Vec<PlotSyncEvent> = Vec::new();
         while let Ok(event) = self.event_rx.try_recv() {
             got_event = true;
             match event {
@@ -90,9 +100,12 @@ impl AppState {
                 DataEvent::LoadError { id, message } => {
                     self.notifications.push(format!("Source {}: {}", id, message));
                 }
+                DataEvent::PlotSyncReady(sync_evt) => {
+                    sync_events.push(sync_evt);
+                }
             }
         }
-        got_event
+        (got_event, sync_events)
     }
 
     /// Remove a source by ID.

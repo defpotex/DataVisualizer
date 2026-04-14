@@ -25,6 +25,8 @@ polars = { version = "0.44", features = ["csv", "lazy"] }
 rfd = "0.15"
 crossbeam-channel = "0.5"
 walkers = "0.53"
+puffin = "0.20.0"
+puffin_http = "0.17.0"
 
 [profile.release]
 opt-level = 3

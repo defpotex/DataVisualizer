@@ -1,11 +1,14 @@
-use crate::data::filter::{apply_filters, Filter};
+use crate::data::filter::{apply_filters_for_source, Filter};
 use crate::data::source::{DataSource, SourceId};
 use crate::plot::map_plot::{snap_to_grid, MapPlot};
 use crate::plot::plot_config::{MapPlotConfig, PlotConfig, ScatterPlotConfig};
 use crate::plot::scatter_plot::{PlotWindowEvent, ScatterPlot};
 use crate::plot::styling::PlotLegendData;
-use crate::state::app_state::AppState;
+use crate::plot::sync::PlotSyncEvent;
+use crate::state::app_state::{AppState, DataEvent};
+use crate::state::selection::SelectionSet;
 use crate::theme::AppTheme;
+use crossbeam_channel::Sender;
 use egui::{Context, Rect, vec2};
 use std::collections::HashMap;
 
@@ -18,6 +21,10 @@ pub enum PlotAction {
     /// User confirmed a config change. The live instance has already been updated.
     /// Caller should sync app_state.plots and call sync_plot to re-extract data.
     ConfigChanged(PlotConfig),
+    /// User changed the point selection (click, ctrl+click, area drag, or clear).
+    SelectionChanged(Option<SelectionSet>),
+    /// User chose "Filter to Selection" from the context menu.
+    FilterToSelection(SelectionSet),
 }
 
 // ── ManagedPlot ───────────────────────────────────────────────────────────────
@@ -46,19 +53,19 @@ impl ManagedPlot {
     fn set_pending_snap(&mut self, pos: egui::Pos2) {
         match self { Self::Map(p) => p.set_pending_snap(pos), Self::Scatter(p) => p.set_pending_snap(pos) }
     }
-    fn show(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, max_pts: usize) -> PlotWindowEvent {
+    fn show(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, max_pts: usize, selection: Option<&SelectionSet>) -> PlotWindowEvent {
         match self {
-            Self::Map(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts),
-            Self::Scatter(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts),
+            Self::Map(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts, selection),
+            Self::Scatter(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts, selection),
         }
     }
-    fn sync_data(&mut self, source: &DataSource, filters: &[Filter]) {
-        let filtered_df = apply_filters(&source.df, filters);
+    fn sync_data_async(&mut self, source: &DataSource, filters: &[Filter], tx: &Sender<DataEvent>) {
+        let filtered_df = apply_filters_for_source(&source.df, filters, Some(source.id));
         let mut tmp = source.clone();
         tmp.df = filtered_df;
         match self {
-            Self::Map(p) => p.sync_data(&tmp),
-            Self::Scatter(p) => p.sync_data(&tmp),
+            Self::Map(p) => p.sync_data_async(&tmp, tx),
+            Self::Scatter(p) => p.sync_data_async(&tmp, tx),
         }
     }
     fn legend_data(&self) -> Option<&PlotLegendData> {
@@ -90,7 +97,10 @@ impl PlotManager {
         let default_pos = tile_default_pos(self.plots.len(), central_rect);
         let mut plot = MapPlot::new(config, default_pos);
         if let Some(source) = state.sources.iter().find(|s| s.id == plot.config.source_id) {
-            plot.sync_data(source);
+            let filtered = apply_filters_for_source(&source.df, &state.filters, Some(source.id));
+            let mut tmp = source.clone();
+            tmp.df = filtered;
+            plot.sync_data_async(&tmp, &state.event_tx);
         }
         self.plots.push(ManagedPlot::Map(plot));
     }
@@ -99,10 +109,10 @@ impl PlotManager {
         let default_pos = tile_default_pos(self.plots.len(), central_rect);
         let mut plot = ScatterPlot::new(config, default_pos);
         if let Some(source) = state.sources.iter().find(|s| s.id == plot.config.source_id) {
-            let filtered = apply_filters(&source.df, &state.filters);
+            let filtered = apply_filters_for_source(&source.df, &state.filters, Some(source.id));
             let mut tmp = source.clone();
             tmp.df = filtered;
-            plot.sync_data(&tmp);
+            plot.sync_data_async(&tmp, &state.event_tx);
         }
         self.plots.push(ManagedPlot::Scatter(plot));
     }
@@ -111,7 +121,7 @@ impl PlotManager {
     pub fn sync_all_filters(&mut self, state: &AppState) {
         for plot in &mut self.plots {
             if let Some(source) = state.sources.iter().find(|s| s.id == plot.source_id()) {
-                plot.sync_data(source, &state.filters);
+                plot.sync_data_async(source, &state.filters, &state.event_tx);
             }
         }
     }
@@ -120,16 +130,43 @@ impl PlotManager {
     pub fn sync_plot(&mut self, id: usize, state: &AppState) {
         if let Some(plot) = self.plots.iter_mut().find(|p| p.plot_id() == id) {
             if let Some(source) = state.sources.iter().find(|s| s.id == plot.source_id()) {
-                plot.sync_data(source, &state.filters);
+                plot.sync_data_async(source, &state.filters, &state.event_tx);
             }
         }
     }
 
     /// Re-sync a specific source's plots (call after source is loaded).
-    pub fn sync_source(&mut self, source: &DataSource, filters: &[Filter]) {
+    pub fn sync_source(&mut self, source: &DataSource, filters: &[Filter], tx: &Sender<DataEvent>) {
         for plot in &mut self.plots {
             if plot.source_id() == source.id {
-                plot.sync_data(source, filters);
+                plot.sync_data_async(source, filters, tx);
+            }
+        }
+    }
+
+    /// Apply a completed sync result from a background thread.
+    pub fn apply_sync_event(&mut self, event: PlotSyncEvent) {
+        match event {
+            PlotSyncEvent::ScatterReady(result) => {
+                let id = result.plot_id;
+                if let Some(ManagedPlot::Scatter(p)) = self.plots.iter_mut().find(|p| p.plot_id() == id) {
+                    p.apply_sync_result(result);
+                }
+            }
+            PlotSyncEvent::MapReady(result) => {
+                let id = result.plot_id;
+                if let Some(ManagedPlot::Map(p)) = self.plots.iter_mut().find(|p| p.plot_id() == id) {
+                    p.apply_sync_result(result);
+                }
+            }
+            PlotSyncEvent::Cancelled { plot_id } => {
+                // Mark the plot as no longer computing (cancel already handled).
+                if let Some(plot) = self.plots.iter_mut().find(|p| p.plot_id() == plot_id) {
+                    match plot {
+                        ManagedPlot::Map(p) => { p.cancel_sync(); }
+                        ManagedPlot::Scatter(p) => { p.cancel_sync(); }
+                    }
+                }
             }
         }
     }
@@ -164,24 +201,28 @@ impl PlotManager {
         central_rect: Rect,
         grid_size: f32,
         max_draw_points: usize,
+        selection: Option<&SelectionSet>,
     ) -> Vec<PlotAction> {
         let mut actions: Vec<PlotAction> = Vec::new();
         let mut closed_ids: Vec<usize> = Vec::new();
 
         for plot in &mut self.plots {
-            match plot.show(ctx, theme, central_rect, grid_size, max_draw_points) {
+            match plot.show(ctx, theme, central_rect, grid_size, max_draw_points, selection) {
                 PlotWindowEvent::Open => {}
                 PlotWindowEvent::Closed => {
                     closed_ids.push(plot.plot_id());
                 }
                 PlotWindowEvent::ConfigChanged(new_config) => {
                     let id = new_config.id();
-                    // Update the live widget's config in-place.
                     plot.apply_config(new_config.clone());
                     actions.push(PlotAction::ConfigChanged(new_config));
-                    // Note: data re-sync is handled by the caller (app.rs) via sync_plot,
-                    // because the caller needs AppState to look up the source and filters.
                     let _ = id;
+                }
+                PlotWindowEvent::SelectionChanged(sel) => {
+                    actions.push(PlotAction::SelectionChanged(sel));
+                }
+                PlotWindowEvent::FilterToSelection(sel) => {
+                    actions.push(PlotAction::FilterToSelection(sel));
                 }
             }
         }

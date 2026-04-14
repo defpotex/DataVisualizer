@@ -1,6 +1,8 @@
 use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig};
 use crate::plot::styling::PlotLegendData;
+use crate::plot::sync::PlotSyncEvent;
 use crate::state::app_state::AppState;
+use crate::state::selection::SelectionSet;
 use crate::theme::AppTheme;
 use crate::ui::plot_grid::{PlotAction, PlotManager};
 use egui::{Align, Color32, Context, Layout, RichText, Ui};
@@ -37,6 +39,11 @@ impl PlotArea {
         self.plot_manager.sync_plot(id, state);
     }
 
+    /// Apply a completed sync result from a background thread.
+    pub fn apply_sync_event(&mut self, event: PlotSyncEvent) {
+        self.plot_manager.apply_sync_event(event);
+    }
+
     /// Collect current legend data from all plots.
     pub fn legend_data(&self) -> Vec<PlotLegendData> {
         self.plot_manager.legend_data()
@@ -49,8 +56,9 @@ impl PlotArea {
         central_rect: egui::Rect,
         grid_size: f32,
         max_draw_points: usize,
+        selection: Option<&SelectionSet>,
     ) -> Vec<PlotAction> {
-        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, max_draw_points)
+        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, max_draw_points, selection)
     }
 
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState, grid_size: f32) {

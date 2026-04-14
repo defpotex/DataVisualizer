@@ -111,6 +111,9 @@ Vehicle Track/Telemetry Visualization Application
 - - Loading... receiving, calculating...
 - **Rename Plot ID/Titles** Add option to reneame plot Titles to window or in left pane card
 
+- **Polish** Add different graphics to items [A] instead of A for text 0/1 for bools, etc
+
+- **Print/Export Graphics**
 
 
 ## Bugs to fix
@@ -129,3 +132,8 @@ Vehicle Track/Telemetry Visualization Application
 - Show scale values when plotting a lot of categoricals
 - when value is requested for tooltip, display 'null' or empty field. (Current behavior hides row)
 - size input - has min/max - should have option to tie to min/max value or min/max of dataset (default)
+- Tooltip - autosize to fit content
+- Some categorical selections not visible/available in selection lists
+
+ 
+- 

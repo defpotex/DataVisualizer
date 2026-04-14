@@ -5,7 +5,10 @@ use crate::plot::plot_config::{AlphaConfig, AxisScale, ColorMode, Colormap, Plot
 use crate::plot::styling::{
     apply_alpha, compute_alphas, compute_colors, compute_radii, ColorLegend, PlotLegendData,
 };
+use crate::plot::sync::{CancelToken, ScatterSyncResult};
+use crate::state::app_state::DataEvent;
 use crate::theme::AppTheme;
+use crossbeam_channel::Sender;
 use egui::{Color32, Context, Pos2, Rect, RichText, Ui, vec2};
 use egui_plot::{Plot, PlotBounds, PlotPoint, PlotPoints, Points};
 use polars::prelude::{DataFrame, DataType};
@@ -395,14 +398,25 @@ pub struct ScatterPlot {
     colors: Arc<Vec<Color32>>,
     radii: Arc<Vec<f32>>,
     hover_labels: Arc<Vec<String>>,
+    /// Original row indices in the (filtered) DataFrame, aligned with `points`.
+    row_indices: Arc<Vec<usize>>,
     /// For categorical mode: ordered (category_name, full-alpha color) from the legend.
     category_entries: Arc<Vec<(String, Color32)>>,
+    /// Per-point category index into `category_entries` (empty for non-categorical modes).
+    category_indices: Arc<Vec<Option<usize>>>,
     x_labels: Arc<Vec<String>>,
     y_labels: Arc<Vec<String>>,
     cached_schema: Option<DataSchema>,
     legend: Option<PlotLegendData>,
 
     configure_dialog: ScatterConfigDialog,
+    context_menu_row: Option<usize>,
+    context_menu_pos: Option<Pos2>,
+
+    /// True while a background thread is computing plot data.
+    computing: bool,
+    /// Token to cancel a running background sync.
+    cancel_token: CancelToken,
 }
 
 impl ScatterPlot {
@@ -416,81 +430,79 @@ impl ScatterPlot {
             colors: Arc::new(Vec::new()),
             radii: Arc::new(Vec::new()),
             hover_labels: Arc::new(Vec::new()),
+            row_indices: Arc::new(Vec::new()),
             category_entries: Arc::new(Vec::new()),
+            category_indices: Arc::new(Vec::new()),
             x_labels: Arc::new(Vec::new()),
             y_labels: Arc::new(Vec::new()),
             cached_schema: None,
             legend: None,
             configure_dialog: ScatterConfigDialog::default(),
+            context_menu_row: None,
+            context_menu_pos: None,
+            computing: false,
+            cancel_token: CancelToken::new(),
         }
     }
 
-    pub fn sync_data(&mut self, source: &DataSource) {
+    pub fn is_computing(&self) -> bool { self.computing }
+
+    /// Kick off data computation on a background thread.  The UI remains
+    /// responsive and shows a "Computing…" overlay until the result arrives
+    /// via the event channel.
+    pub fn sync_data_async(&mut self, source: &DataSource, tx: &Sender<DataEvent>) {
         self.cached_schema = Some(source.schema.clone());
-        let df = &source.df;
-        let n = df.height();
 
-        let (xs, x_labels_vec) = column_to_f64(df, &self.config.x_col, &self.config.x_scale);
-        let (ys, y_labels_vec) = column_to_f64(df, &self.config.y_col, &self.config.y_scale);
+        // Cancel any previous in-flight computation.
+        self.cancel_token.cancel();
+        let token = CancelToken::new();
+        self.cancel_token = token.clone();
+        self.computing = true;
 
-        let solid_color = Color32::from_rgb(100, 200, 255);
-        let (mut all_colors, color_legend) = compute_colors(df, &self.config.color_mode, solid_color, n);
-        let (all_radii, size_legend) = compute_radii(df, self.config.size_config.as_ref(), 2.5, n);
-        let base_alpha = 200.0 / 255.0;
-        let (all_alphas, alpha_legend) = compute_alphas(df, self.config.alpha_config.as_ref(), base_alpha, n);
-        apply_alpha(&mut all_colors, &all_alphas);
+        let plot_id = self.config.id;
+        let config = self.config.clone();
+        let schema = source.schema.clone();
+        let df = source.df.clone();
+        let tx = tx.clone();
 
-        // Pre-extract hover field columns once (avoids per-row column lookup + cast).
-        let hover_cols: Vec<(&str, Vec<Option<String>>)> = self.config.hover_fields.iter()
-            .filter_map(|field| {
-                let series = df.column(field).ok()?.as_series()?.clone();
-                let cast = series.cast(&DataType::String).ok()?;
-                let ca = cast.str().ok()?.clone();
-                let vals: Vec<Option<String>> = ca.into_iter().map(|v| v.map(|s| s.to_string())).collect();
-                Some((field.as_str(), vals))
-            })
-            .collect();
-
-        let row_count = xs.len().min(ys.len());
-        let mut pts: Vec<[f64; 2]> = Vec::new();
-        let mut colors: Vec<Color32> = Vec::new();
-        let mut radii: Vec<f32> = Vec::new();
-        let mut hover_labels_vec: Vec<String> = Vec::new();
-
-        for i in 0..row_count {
-            if let (Some(x), Some(y)) = (xs[i], ys[i]) {
-                pts.push([x, y]);
-                colors.push(all_colors.get(i).copied().unwrap_or(solid_color));
-                radii.push(all_radii.get(i).copied().unwrap_or(2.5));
-                hover_labels_vec.push(build_hover_label(
-                    i, x, y,
-                    &x_labels_vec, &y_labels_vec,
-                    &self.config,
-                    &hover_cols,
-                ));
+        std::thread::spawn(move || {
+            let result = compute_scatter_data(plot_id, &config, &schema, &df, &token);
+            match result {
+                Some(r) => {
+                    let _ = tx.send(DataEvent::PlotSyncReady(
+                        crate::plot::sync::PlotSyncEvent::ScatterReady(r),
+                    ));
+                }
+                None => {
+                    // Cancelled.
+                    let _ = tx.send(DataEvent::PlotSyncReady(
+                        crate::plot::sync::PlotSyncEvent::Cancelled { plot_id },
+                    ));
+                }
             }
-        }
-
-        let category_entries: Vec<(String, Color32)> = match &color_legend {
-            ColorLegend::Categorical { entries, .. } => entries.clone(),
-            _ => Vec::new(),
-        };
-
-        self.points = Arc::new(pts);
-        self.colors = Arc::new(colors);
-        self.radii = Arc::new(radii);
-        self.hover_labels = Arc::new(hover_labels_vec);
-        self.category_entries = Arc::new(category_entries);
-        self.x_labels = Arc::new(x_labels_vec);
-        self.y_labels = Arc::new(y_labels_vec);
-
-        self.legend = Some(PlotLegendData {
-            plot_id: self.config.id,
-            plot_title: self.config.title.clone(),
-            color: color_legend,
-            size: size_legend,
-            alpha: alpha_legend,
         });
+    }
+
+    /// Apply a completed sync result from the background thread.
+    pub fn apply_sync_result(&mut self, result: ScatterSyncResult) {
+        self.cached_schema = Some(result.schema);
+        self.points = Arc::new(result.points);
+        self.colors = Arc::new(result.colors);
+        self.radii = Arc::new(result.radii);
+        self.hover_labels = Arc::new(result.hover_labels);
+        self.row_indices = Arc::new(result.row_indices);
+        self.category_entries = Arc::new(result.category_entries);
+        self.category_indices = Arc::new(result.category_indices);
+        self.x_labels = Arc::new(result.x_labels);
+        self.y_labels = Arc::new(result.y_labels);
+        self.legend = Some(result.legend);
+        self.computing = false;
+    }
+
+    /// Cancel any in-flight background sync and clear the computing flag.
+    pub fn cancel_sync(&mut self) {
+        self.cancel_token.cancel();
+        self.computing = false;
     }
 
     pub fn apply_config(&mut self, config: ScatterPlotConfig) { self.config = config; }
@@ -517,8 +529,11 @@ impl ScatterPlot {
         central_rect: Rect,
         grid_size: f32,
         max_draw_points: usize,
+        _selection: Option<&crate::state::selection::SelectionSet>,
     ) -> PlotWindowEvent {
         if !self.is_open { return PlotWindowEvent::Closed; }
+
+        puffin::profile_function!();
 
         let c = &theme.colors;
         let s = &theme.spacing;
@@ -565,26 +580,43 @@ impl ScatterPlot {
 
         if let Some(pos) = snap { win = win.current_pos(pos); }
 
+        let computing = self.computing;
+        let mut cancel_clicked = false;
         win.show(ctx, |ui| {
             ui.push_id(id, |ui| {
                 gear_clicked = show_toolbar(ui, &self.config, self.points.len(), theme);
                 ui.separator();
-                show_scatter(
-                    ui,
-                    Arc::clone(&self.points),
-                    display_colors,
-                    Arc::clone(&self.radii),
-                    Arc::clone(&self.hover_labels),
-                    Arc::clone(&self.category_entries),
-                    Arc::clone(&self.x_labels),
-                    Arc::clone(&self.y_labels),
-                    &self.config,
-                    theme,
-                    max_draw_points,
-                    id,
-                );
+                if computing {
+                    show_computing_overlay(ui, theme, &mut cancel_clicked);
+                } else {
+                    show_scatter(
+                        ui,
+                        Arc::clone(&self.points),
+                        display_colors,
+                        Arc::clone(&self.radii),
+                        Arc::clone(&self.hover_labels),
+                        Arc::clone(&self.row_indices),
+                        Arc::clone(&self.category_entries),
+                        Arc::clone(&self.category_indices),
+                        Arc::clone(&self.x_labels),
+                        Arc::clone(&self.y_labels),
+                        &self.config,
+                        theme,
+                        max_draw_points,
+                        id,
+                        _selection,
+                        self.context_menu_row.is_some(),
+                    );
+                }
             });
         });
+        if cancel_clicked {
+            self.cancel_sync();
+        }
+        // Request continuous repaint while computing so the spinner animates.
+        if self.computing {
+            ctx.request_repaint();
+        }
 
         if gear_clicked {
             if let Some(schema) = &self.cached_schema {
@@ -597,6 +629,134 @@ impl ScatterPlot {
         if let Some(schema) = &self.cached_schema.clone() {
             if let Some(new_config) = self.configure_dialog.show(ctx, &self.config, schema, theme) {
                 event = PlotWindowEvent::ConfigChanged(PlotConfig::Scatter(new_config));
+            }
+        }
+
+        // ── Handle selection interactions from show_scatter ───────────────────
+        let interaction: Option<ScatterInteraction> = ctx.memory(|mem| {
+            mem.data.get_temp(egui::Id::new(("scatter_interaction", id)))
+        });
+        if let Some(inter) = interaction {
+            // Clear the temp so we don't re-process next frame.
+            ctx.memory_mut(|mem| {
+                mem.data.remove::<ScatterInteraction>(egui::Id::new(("scatter_interaction", id)));
+            });
+
+            use crate::state::selection::SelectionSet;
+            let source_id = self.config.source_id;
+
+            match inter {
+                ScatterInteraction::Click { row, ctrl } => {
+                    if ctrl {
+                        // Toggle point in existing selection.
+                        let mut sel = _selection.cloned()
+                            .unwrap_or_else(|| SelectionSet::new(id, source_id));
+                        sel.plot_id = id;
+                        sel.source_id = source_id;
+                        sel.toggle(row);
+                        if sel.is_empty() {
+                            event = PlotWindowEvent::SelectionChanged(None);
+                        } else {
+                            event = PlotWindowEvent::SelectionChanged(Some(sel));
+                        }
+                    } else {
+                        // Single click → select just this point.
+                        event = PlotWindowEvent::SelectionChanged(
+                            Some(SelectionSet::single(id, source_id, row))
+                        );
+                    }
+                }
+                ScatterInteraction::ClearSelection => {
+                    if _selection.is_some() {
+                        event = PlotWindowEvent::SelectionChanged(None);
+                    }
+                }
+                ScatterInteraction::RightClick { row, screen_pos } => {
+                    // Show context menu at the right-click position.
+                    self.context_menu_row = Some(row);
+                    self.context_menu_pos = Some(screen_pos);
+                }
+                ScatterInteraction::AreaSelect { rows, ctrl } => {
+                    if rows.is_empty() && !ctrl {
+                        event = PlotWindowEvent::SelectionChanged(None);
+                    } else if ctrl {
+                        // Ctrl+drag: add to existing selection.
+                        let mut sel = _selection.cloned()
+                            .unwrap_or_else(|| SelectionSet::new(id, source_id));
+                        sel.plot_id = id;
+                        sel.source_id = source_id;
+                        for row in rows { sel.indices.insert(row); }
+                        if sel.is_empty() {
+                            event = PlotWindowEvent::SelectionChanged(None);
+                        } else {
+                            event = PlotWindowEvent::SelectionChanged(Some(sel));
+                        }
+                    } else {
+                        event = PlotWindowEvent::SelectionChanged(
+                            Some(SelectionSet::from_indices(id, source_id, rows))
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Context menu ─────────────────────────────────────────────────────
+        if let Some(row) = self.context_menu_row {
+            let mut close_menu = false;
+            let menu_pos = self.context_menu_pos.unwrap_or(egui::pos2(100.0, 100.0));
+
+            let area_resp = egui::Area::new(egui::Id::new(("scatter_ctx_menu", id)))
+                .fixed_pos(menu_pos)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::default()
+                        .fill(c.bg_panel)
+                        .stroke(egui::Stroke::new(1.0, c.border))
+                        .corner_radius(egui::CornerRadius::from(4.0_f32))
+                        .inner_margin(egui::Margin::from(6.0_f32))
+                        .show(ui, |ui| {
+                            ui.set_min_width(160.0);
+                            ui.label(
+                                RichText::new(format!("Row {}", row))
+                                    .color(c.text_secondary)
+                                    .size(s.font_small),
+                            );
+                            ui.separator();
+
+                            if ui.button(RichText::new("Select Point").color(c.text_primary).size(s.font_body)).clicked() {
+                                use crate::state::selection::SelectionSet;
+                                event = PlotWindowEvent::SelectionChanged(
+                                    Some(SelectionSet::single(id, self.config.source_id, row))
+                                );
+                                close_menu = true;
+                            }
+
+                            if let Some(sel) = _selection {
+                                if !sel.is_empty() {
+                                    if ui.button(RichText::new(format!("Filter to Selection ({} pts)", sel.len())).color(c.text_primary).size(s.font_body)).clicked() {
+                                        event = PlotWindowEvent::FilterToSelection(sel.clone());
+                                        close_menu = true;
+                                    }
+                                }
+                            }
+
+                            if ui.button(RichText::new("Clear Selection").color(c.text_primary).size(s.font_body)).clicked() {
+                                event = PlotWindowEvent::SelectionChanged(None);
+                                close_menu = true;
+                            }
+
+                            if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
+                                close_menu = true;
+                            }
+                        });
+                });
+
+            // Close on button action, or on click outside the menu area.
+            let clicked_outside = ctx.input(|i| i.pointer.any_pressed())
+                && !area_resp.response.rect.contains(ctx.input(|i| i.pointer.hover_pos().unwrap_or(egui::pos2(-1.0, -1.0))));
+            if close_menu || clicked_outside {
+                self.context_menu_row = None;
+                self.context_menu_pos = None;
             }
         }
 
@@ -622,6 +782,8 @@ pub enum PlotWindowEvent {
     Open,
     Closed,
     ConfigChanged(PlotConfig),
+    SelectionChanged(Option<crate::state::selection::SelectionSet>),
+    FilterToSelection(crate::state::selection::SelectionSet),
 }
 
 // ── Toolbar ───────────────────────────────────────────────────────────────────
@@ -662,6 +824,142 @@ fn show_toolbar(ui: &mut Ui, config: &ScatterPlotConfig, point_count: usize, the
     gear_clicked
 }
 
+// ── Computing overlay ────────────────────────────────────────────────────────
+
+/// Shown inside a plot window while data is being computed on a background thread.
+fn show_computing_overlay(ui: &mut Ui, theme: &AppTheme, cancel_clicked: &mut bool) {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    let available = ui.available_size();
+    // Claim the full available space so the window doesn't shrink.
+    let (rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
+    let center = rect.center();
+    ui.allocate_ui_at_rect(
+        egui::Rect::from_center_size(center, egui::vec2(200.0, 100.0)),
+        |ui| {
+            ui.vertical_centered(|ui| {
+                ui.spinner();
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Computing plot data...")
+                        .color(c.text_secondary)
+                        .size(s.font_body),
+                );
+                ui.add_space(12.0);
+                let btn = egui::Button::new(
+                    RichText::new("Cancel").color(c.text_primary).size(s.font_small),
+                )
+                .fill(c.widget_bg)
+                .stroke(egui::Stroke::new(1.0, c.border));
+                if ui.add(btn).clicked() {
+                    *cancel_clicked = true;
+                }
+            });
+        },
+    );
+}
+
+// ── Background computation ───────────────────────────────────────────────────
+
+/// Pure function that does all the expensive data extraction + styling work.
+/// Returns `None` if cancelled via `token`.
+fn compute_scatter_data(
+    plot_id: usize,
+    config: &ScatterPlotConfig,
+    schema: &DataSchema,
+    df: &DataFrame,
+    token: &CancelToken,
+) -> Option<ScatterSyncResult> {
+    puffin::profile_function!();
+    let n = df.height();
+
+    let (xs, x_labels_vec) = column_to_f64(df, &config.x_col, &config.x_scale);
+    let (ys, y_labels_vec) = column_to_f64(df, &config.y_col, &config.y_scale);
+    if token.is_cancelled() { return None; }
+
+    let solid_color = Color32::from_rgb(100, 200, 255);
+    let (mut all_colors, color_legend, all_cat_indices) = compute_colors(df, &config.color_mode, solid_color, n);
+    if token.is_cancelled() { return None; }
+    let (all_radii, size_legend) = compute_radii(df, config.size_config.as_ref(), 2.5, n);
+    let base_alpha = 200.0 / 255.0;
+    let (all_alphas, alpha_legend) = compute_alphas(df, config.alpha_config.as_ref(), base_alpha, n);
+    apply_alpha(&mut all_colors, &all_alphas);
+    if token.is_cancelled() { return None; }
+
+    // Pre-extract hover field columns once.
+    let hover_cols: Vec<(String, Vec<Option<String>>)> = config.hover_fields.iter()
+        .filter_map(|field| {
+            let series = df.column(field).ok()?.as_series()?.clone();
+            let cast = series.cast(&DataType::String).ok()?;
+            let ca = cast.str().ok()?.clone();
+            let vals: Vec<Option<String>> = ca.into_iter().map(|v| v.map(|s| s.to_string())).collect();
+            Some((field.clone(), vals))
+        })
+        .collect();
+
+    // Read original row indices (injected by apply_filters_for_source).
+    let orig_row_indices: Vec<usize> = df.column(crate::data::filter::ORIG_ROW_COL)
+        .ok()
+        .and_then(|c| c.as_series().map(|s| s.clone()))
+        .and_then(|s| s.u64().ok().map(|ca| {
+            ca.into_iter().map(|v| v.unwrap_or(0) as usize).collect()
+        }))
+        .unwrap_or_else(|| (0..n).collect());
+
+    if token.is_cancelled() { return None; }
+
+    let row_count = xs.len().min(ys.len());
+    let mut pts: Vec<[f64; 2]> = Vec::new();
+    let mut colors: Vec<Color32> = Vec::new();
+    let mut radii: Vec<f32> = Vec::new();
+    let mut hover_labels_vec: Vec<String> = Vec::new();
+    let mut row_idx_vec: Vec<usize> = Vec::new();
+    let mut cat_idx_vec: Vec<Option<usize>> = Vec::new();
+
+    for i in 0..row_count {
+        if i % 50_000 == 0 && token.is_cancelled() { return None; }
+        if let (Some(x), Some(y)) = (xs[i], ys[i]) {
+            pts.push([x, y]);
+            colors.push(all_colors.get(i).copied().unwrap_or(solid_color));
+            radii.push(all_radii.get(i).copied().unwrap_or(2.5));
+            hover_labels_vec.push(build_hover_label(
+                i, x, y,
+                &x_labels_vec, &y_labels_vec,
+                config,
+                &hover_cols,
+            ));
+            row_idx_vec.push(orig_row_indices.get(i).copied().unwrap_or(i));
+            cat_idx_vec.push(all_cat_indices.get(i).copied().flatten());
+        }
+    }
+
+    let category_entries: Vec<(String, Color32)> = match &color_legend {
+        ColorLegend::Categorical { entries, .. } => entries.clone(),
+        _ => Vec::new(),
+    };
+
+    Some(ScatterSyncResult {
+        plot_id,
+        schema: schema.clone(),
+        points: pts,
+        colors,
+        radii,
+        hover_labels: hover_labels_vec,
+        row_indices: row_idx_vec,
+        category_entries,
+        category_indices: cat_idx_vec,
+        x_labels: x_labels_vec,
+        y_labels: y_labels_vec,
+        legend: PlotLegendData {
+            plot_id,
+            plot_title: config.title.clone(),
+            color: color_legend,
+            size: size_legend,
+            alpha: alpha_legend,
+        },
+    })
+}
+
 // ── Scatter widget ────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -671,14 +969,19 @@ fn show_scatter(
     colors: Arc<Vec<Color32>>,
     radii: Arc<Vec<f32>>,
     hover_labels: Arc<Vec<String>>,
+    row_indices: Arc<Vec<usize>>,
     category_entries: Arc<Vec<(String, Color32)>>,
+    category_indices: Arc<Vec<Option<usize>>>,
     x_labels: Arc<Vec<String>>,
     y_labels: Arc<Vec<String>>,
     config: &ScatterPlotConfig,
     theme: &AppTheme,
     max_draw_points: usize,
     plot_id: usize,
+    selection: Option<&crate::state::selection::SelectionSet>,
+    context_menu_open: bool,
 ) {
+    puffin::profile_function!();
     let n = points.len();
     if n == 0 {
         let c = &theme.colors;
@@ -695,8 +998,27 @@ fn show_scatter(
         1
     };
 
+    // Apply selection dimming: when a selection is active, unselected points get reduced alpha.
+    let has_selection = selection.map_or(false, |s| !s.is_empty());
+    let colors = if has_selection {
+        let sel = selection.unwrap();
+        let dimmed: Vec<Color32> = colors.iter().enumerate().map(|(i, &c)| {
+            let row = row_indices.get(i).copied().unwrap_or(i);
+            if sel.contains(row) {
+                c // selected: keep full color
+            } else {
+                // dim to ~30% opacity
+                Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * 0.3) as u8)
+            }
+        }).collect();
+        Arc::new(dimmed)
+    } else {
+        colors
+    };
+
     let is_categorical = !category_entries.is_empty();
     let is_continuous = matches!(config.color_mode, ColorMode::Continuous { .. });
+    let use_painter = is_categorical || is_continuous;
 
     let x_is_cat = config.x_scale == AxisScale::Categorical && !x_labels.is_empty();
     let y_is_cat = config.y_scale == AxisScale::Categorical && !y_labels.is_empty();
@@ -710,25 +1032,25 @@ fn show_scatter(
     let x_is_cat2 = x_is_cat;
     let y_is_cat2 = y_is_cat;
 
-    // label_formatter: used by Solid and Categorical native series.
-    // For Continuous we use manual hover, so return empty.
+    // label_formatter: used by Solid native series only.
+    // Categorical and Continuous use painter-based manual hover.
     let hover_labels_fmt = Arc::clone(&hover_labels);
     let points_fmt = Arc::clone(&points);
     let step_fmt = step;
-    let is_cont_fmt = is_continuous;
+    let use_painter_fmt = use_painter;
 
     let mut plot = Plot::new(egui::Id::new(("scatter", plot_id)))
         .x_axis_label(&config.x_col as &str)
         .y_axis_label(&config.y_col as &str)
         .set_margin_fraction(egui::vec2(0.05, 0.05))
         .allow_zoom(true)
-        .allow_drag(true)
+        .allow_drag(false)
         .allow_scroll(true)
         .allow_boxed_zoom(true)
         .auto_bounds(egui::Vec2b::new(!x_is_cat, !y_is_cat))
         .label_formatter(move |_name, val: &egui_plot::PlotPoint| {
-            if is_cont_fmt { return String::new(); }
-            // Nearest-point lookup for Solid / Categorical.
+            if use_painter_fmt || context_menu_open { return String::new(); }
+            // Nearest-point lookup for Solid mode.
             let best = (0..points_fmt.len())
                 .step_by(step_fmt)
                 .min_by(|&i, &j| {
@@ -778,35 +1100,36 @@ fn show_scatter(
         plot = plot.y_grid_spacer(egui_plot::log_grid_spacer(10));
     }
 
-    // For continuous painter mode: collect screen positions inside the closure.
-    let mut screen_pts: Vec<(egui::Pos2, Color32, f32, usize)> = Vec::new();
+    // For painter mode (continuous + categorical): collect screen positions inside the closure.
+    let sampled_count = if step > 1 { n / step } else { n };
+    let mut screen_pts: Vec<(egui::Pos2, Color32, f32, usize)> = Vec::with_capacity(
+        if use_painter { sampled_count } else { 0 }
+    );
+
+    // Read and consume any pending pan delta from shift+drag.
+    let pan_key = egui::Id::new(("scatter_pan_delta", plot_id));
+    let pending_pan: egui::Vec2 = ui.ctx().memory(|mem| mem.data.get_temp(pan_key).unwrap_or(egui::Vec2::ZERO));
+    if pending_pan.length() > 0.001 {
+        ui.ctx().memory_mut(|mem| { mem.data.remove::<egui::Vec2>(pan_key); });
+    }
 
     let plot_response = plot.show(ui, |plot_ui: &mut egui_plot::PlotUi| {
-        if is_categorical {
-            // ── Categorical: one Points series per category ────────────────────
-            let first_radius = radii.first().copied().unwrap_or(2.5);
-            for (cat_name, cat_color) in category_entries.iter() {
-                let opaque_cat = Color32::from_rgb(cat_color.r(), cat_color.g(), cat_color.b());
-                let cat_pts: PlotPoints = (0..n)
-                    .step_by(step)
-                    .filter_map(|i| {
-                        let c = colors.get(i)?;
-                        let opaque_c = Color32::from_rgb(c.r(), c.g(), c.b());
-                        if opaque_c == opaque_cat { Some(points[i]) } else { None }
-                    })
-                    .collect();
-                // Use alpha=200 to match the painter approach.
-                let display_color = Color32::from_rgba_unmultiplied(
-                    cat_color.r(), cat_color.g(), cat_color.b(), 200,
-                );
-                plot_ui.points(
-                    Points::new(cat_name.as_str(), cat_pts)
-                        .color(display_color)
-                        .radius(first_radius)
-                        .shape(egui_plot::MarkerShape::Circle),
-                );
-            }
-        } else if is_continuous {
+        // Apply pending pan offset from shift+drag.
+        if pending_pan.length() > 0.001 {
+            let bounds = plot_ui.plot_bounds();
+            let dx = pending_pan.x as f64;
+            let dy = pending_pan.y as f64;
+            plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                [bounds.min()[0] - dx, bounds.min()[1] - dy],
+                [bounds.max()[0] - dx, bounds.max()[1] - dy],
+            ));
+        }
+
+        if is_categorical || is_continuous {
+            // ── Painter mode (categorical + continuous) ──────────────────────
+            // Use a transparent bounds-only series for auto_bounds, then
+            // collect screen positions for manual painting.  This is O(n)
+            // regardless of how many categories exist.
             // ── Continuous: bounds-only series + collect screen positions ──────
             // Use a nearly-zero-radius transparent series just for auto_bounds.
             let bounds_pts: PlotPoints = (0..n).step_by(step)
@@ -848,23 +1171,32 @@ fn show_scatter(
         }
     });
 
-    // ── Continuous: paint circles and manual hover ─────────────────────────────
-    if is_continuous && !screen_pts.is_empty() {
+    // ── Painter mode: paint circles and manual hover ───────────────────────────
+    // Build spatial grid for O(1) nearest-point lookups (hover + click).
+    let grid = if use_painter && !screen_pts.is_empty() {
+        Some(SpatialGrid::build(&screen_pts, plot_response.response.rect))
+    } else {
+        None
+    };
+
+    if use_painter && !screen_pts.is_empty() {
         let clip = plot_response.response.rect;
         let painter = ui.painter().with_clip_rect(clip);
         for &(pos, color, radius, _) in &screen_pts {
             painter.circle_filled(pos, radius, color);
         }
 
-        // Manual hover tooltip.
+        // Manual hover tooltip (suppressed when context menu is open).
+        if !context_menu_open && !ui.input(|i| i.pointer.secondary_down()) {
         if let Some(hpos) = plot_response.response.hover_pos() {
-            let nearest = screen_pts.iter()
-                .min_by(|a, b| {
-                    a.0.distance(hpos).partial_cmp(&b.0.distance(hpos))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+            let nearest = grid.as_ref().unwrap().find_nearest(hpos, &screen_pts);
             if let Some(&(pos, _, radius, idx)) = nearest {
                 if pos.distance(hpos) <= radius + 10.0 {
+                    // Draw hover ring around nearest point (matching map plot style).
+                    let clip = plot_response.response.rect;
+                    let hover_painter = ui.painter().with_clip_rect(clip);
+                    hover_painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+
                     let label = hover_labels.get(idx).cloned().unwrap_or_default();
                     if !label.is_empty() {
                         egui::show_tooltip_at_pointer(
@@ -879,7 +1211,204 @@ fn show_scatter(
                 }
             }
         }
+        }
     }
+
+    // ── Selection highlight: draw rings around selected points ────────────────
+    if has_selection {
+        let sel = selection.unwrap();
+        let clip = plot_response.response.rect;
+        let painter = ui.painter().with_clip_rect(clip);
+
+        if use_painter && !screen_pts.is_empty() {
+            // We already have screen positions for continuous mode.
+            for &(pos, _, radius, idx) in &screen_pts {
+                let row = row_indices.get(idx).copied().unwrap_or(idx);
+                if sel.contains(row) {
+                    painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+                }
+            }
+        } else {
+            // For solid/categorical: project selected points to screen space.
+            let transform = plot_response.transform;
+            for i in (0..n).step_by(step) {
+                let row = row_indices.get(i).copied().unwrap_or(i);
+                if sel.contains(row) {
+                    let [x, y] = points[i];
+                    let screen = transform.position_from_point(&PlotPoint::new(x, y));
+                    let radius = radii.get(i).copied().unwrap_or(2.5);
+                    painter.circle_stroke(screen, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+                }
+            }
+        }
+    }
+
+    // ── Click / Ctrl+click / Right-click interaction ─────────────────────────
+    let response = &plot_response.response;
+    let mut interaction: Option<ScatterInteraction> = None;
+
+    // Find nearest point to pointer (for click and right-click).
+    // In painter mode, reuse the spatial grid built during rendering.
+    // In solid mode, fall back to linear scan (no screen_pts available).
+    let find_nearest = |pos: egui::Pos2| -> Option<usize> {
+        if let Some(ref g) = grid {
+            // Use spatial grid for O(1) lookup.
+            g.find_nearest(pos, &screen_pts)
+                .and_then(|&(pt_pos, _, radius, idx)| {
+                    if pt_pos.distance(pos) <= radius + 10.0 { Some(idx) } else { None }
+                })
+        } else {
+            let transform = &plot_response.transform;
+            let mut best_idx = None;
+            let mut best_dist = f32::MAX;
+            for i in (0..n).step_by(step) {
+                let [x, y] = points[i];
+                let screen = transform.position_from_point(&PlotPoint::new(x, y));
+                let dist = screen.distance(pos);
+                let radius = radii.get(i).copied().unwrap_or(2.5);
+                if dist <= radius + 10.0 && dist < best_dist {
+                    best_dist = dist;
+                    best_idx = Some(i);
+                }
+            }
+            best_idx
+        }
+    };
+
+    // Primary click (left button released).
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if let Some(pt_idx) = find_nearest(pos) {
+                let row = row_indices.get(pt_idx).copied().unwrap_or(pt_idx);
+                let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                interaction = Some(ScatterInteraction::Click { row, ctrl });
+            } else {
+                // Clicked empty space → clear selection.
+                interaction = Some(ScatterInteraction::ClearSelection);
+            }
+        }
+    }
+
+    // Secondary click (right-click).
+    if response.secondary_clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if let Some(pt_idx) = find_nearest(pos) {
+                let row = row_indices.get(pt_idx).copied().unwrap_or(pt_idx);
+                interaction = Some(ScatterInteraction::RightClick { row, screen_pos: pos });
+            }
+        }
+    }
+
+    // ── Drag interactions ──────────────────────────────────────────────────
+    let drag_key = egui::Id::new(("scatter_drag_start", plot_id));
+    let shift_held = ui.input(|i| i.modifiers.shift);
+
+    // Shift+drag = pan (manual, since allow_drag is false).
+    if shift_held && response.dragged_by(egui::PointerButton::Primary) {
+        let delta = response.drag_delta();
+        // Convert screen-space delta to plot-space delta using the transform.
+        let transform = &plot_response.transform;
+        let origin = transform.value_from_position(egui::pos2(0.0, 0.0));
+        let shifted = transform.value_from_position(egui::pos2(delta.x, delta.y));
+        let dx = shifted.x - origin.x;
+        let dy = shifted.y - origin.y;
+        // Store pan offset for next frame (accumulates across frames while dragging).
+        let pan_key = egui::Id::new(("scatter_pan_delta", plot_id));
+        let prev: egui::Vec2 = ui.ctx().memory(|mem| mem.data.get_temp(pan_key).unwrap_or(egui::Vec2::ZERO));
+        ui.ctx().memory_mut(|mem| {
+            mem.data.insert_temp(pan_key, prev + egui::vec2(dx as f32, dy as f32));
+        });
+    }
+
+    // Plain drag (no shift) = area selection rectangle.
+    // Record press position immediately on mouse-down so the rectangle starts
+    // exactly where the user clicked (not after egui's drag-threshold delay).
+    let press_key = egui::Id::new(("scatter_press_start", plot_id));
+    if !shift_held && ui.input(|i| i.pointer.any_pressed()) {
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            if response.rect.contains(pos) {
+                ui.ctx().memory_mut(|mem| {
+                    mem.data.insert_temp::<Pos2>(press_key, pos);
+                });
+            }
+        }
+    }
+    // Promote press to drag start once egui recognises the drag gesture.
+    if !shift_held && response.dragged_by(egui::PointerButton::Primary) {
+        let have_drag: bool = ui.ctx().memory(|mem| mem.data.get_temp::<Pos2>(drag_key).is_some());
+        if !have_drag {
+            let origin: Option<Pos2> = ui.ctx().memory(|mem| mem.data.get_temp(press_key));
+            if let Some(pos) = origin {
+                ui.ctx().memory_mut(|mem| {
+                    mem.data.insert_temp::<Pos2>(drag_key, pos);
+                });
+            }
+        }
+    }
+    // Clean up press position on release.
+    if ui.input(|i| i.pointer.any_released()) {
+        ui.ctx().memory_mut(|mem| { mem.data.remove::<Pos2>(press_key); });
+    }
+
+    let drag_start: Option<Pos2> = ui.ctx().memory(|mem| mem.data.get_temp(drag_key));
+    if let Some(start) = drag_start {
+        if let Some(current) = ui.input(|i| i.pointer.hover_pos()) {
+            // Draw selection rectangle.
+            let sel_rect = Rect::from_two_pos(start, current);
+            let painter = ui.painter().with_clip_rect(response.rect);
+            painter.rect_filled(
+                sel_rect,
+                0.0,
+                Color32::from_rgba_unmultiplied(100, 180, 255, 40),
+            );
+            painter.rect_stroke(
+                sel_rect,
+                0.0,
+                egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(100, 180, 255, 180)),
+                egui::StrokeKind::Outside,
+            );
+        }
+
+        // On release, collect all points inside the rectangle.
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some(end) = ui.input(|i| i.pointer.hover_pos()) {
+                let sel_rect = Rect::from_two_pos(start, end);
+                let transform = &plot_response.transform;
+                let mut selected_rows: Vec<usize> = Vec::new();
+                for i in (0..n).step_by(step) {
+                    let [x, y] = points[i];
+                    let screen = transform.position_from_point(&PlotPoint::new(x, y));
+                    if sel_rect.contains(screen) {
+                        let row = row_indices.get(i).copied().unwrap_or(i);
+                        selected_rows.push(row);
+                    }
+                }
+                let ctrl = ui.input(|i| i.modifiers.ctrl);
+                interaction = Some(ScatterInteraction::AreaSelect { rows: selected_rows, ctrl });
+            }
+            // Clear drag start.
+            ui.ctx().memory_mut(|mem| {
+                mem.data.remove::<Pos2>(drag_key);
+            });
+        }
+    }
+
+    // Store interaction result for show_as_window to pick up.
+    if let Some(inter) = interaction {
+        ui.ctx().memory_mut(|mem| {
+            mem.data.insert_temp(egui::Id::new(("scatter_interaction", plot_id)), inter);
+        });
+    }
+}
+
+/// Interaction events produced by show_scatter for show_as_window to consume.
+#[derive(Clone, Debug)]
+enum ScatterInteraction {
+    Click { row: usize, ctrl: bool },
+    ClearSelection,
+    RightClick { row: usize, screen_pos: egui::Pos2 },
+    /// Drag area selection completed. Contains row indices of all enclosed points.
+    AreaSelect { rows: Vec<usize>, ctrl: bool },
 }
 
 // ── Hover label construction ──────────────────────────────────────────────────
@@ -893,7 +1422,7 @@ fn build_hover_label(
     x_labels: &[String],
     y_labels: &[String],
     config: &ScatterPlotConfig,
-    hover_cols: &[(&str, Vec<Option<String>>)],
+    hover_cols: &[(String, Vec<Option<String>>)],
 ) -> String {
     let x_str = if config.x_scale == AxisScale::Categorical {
         x_labels.get(x.round() as usize).cloned()
@@ -953,10 +1482,11 @@ fn column_to_categorical(df: &DataFrame, col: &str) -> (Vec<Option<f64>>, Vec<St
         Err(_) => return (Vec::new(), Vec::new()),
     };
     let mut labels: Vec<String> = Vec::new();
+    let mut label_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let values: Vec<Option<f64>> = ca.into_iter().map(|opt_s| {
         let s = opt_s?;
-        let idx = if let Some(pos) = labels.iter().position(|l| l == s) { pos }
-        else { let pos = labels.len(); labels.push(s.to_string()); pos };
+        let idx = if let Some(&pos) = label_to_idx.get(s) { pos }
+        else { let pos = labels.len(); label_to_idx.insert(s.to_string(), pos); labels.push(s.to_string()); pos };
         Some(idx as f64)
     }).collect();
     (values, labels)
@@ -1025,4 +1555,74 @@ fn format_count(n: usize) -> String {
         result.push(ch);
     }
     result.chars().rev().collect()
+}
+
+// ── Spatial grid for fast nearest-point lookups ─────────────────────────────
+
+/// A simple 2D grid that buckets screen-space points for O(1) average-case
+/// nearest-neighbor queries. Cell size is chosen so the average cell has ~4
+/// points, giving fast lookups regardless of dataset size.
+struct SpatialGrid {
+    cell_size: f32,
+    origin: egui::Pos2,
+    cols: usize,
+    rows: usize,
+    /// Each cell stores indices into the source `screen_pts` slice.
+    cells: Vec<Vec<usize>>,
+}
+
+impl SpatialGrid {
+    fn build(screen_pts: &[(egui::Pos2, Color32, f32, usize)], clip: egui::Rect) -> Self {
+        // Target ~4 points per cell; clamp cell size to [10, 80] px.
+        let n = screen_pts.len().max(1);
+        let area = clip.width() * clip.height();
+        let cell_size = (area / (n as f32 / 4.0)).sqrt().clamp(10.0, 80.0);
+        let cols = ((clip.width() / cell_size).ceil() as usize).max(1);
+        let rows = ((clip.height() / cell_size).ceil() as usize).max(1);
+        let origin = clip.min;
+        let mut cells = vec![Vec::new(); cols * rows];
+
+        for (i, &(pos, _, _, _)) in screen_pts.iter().enumerate() {
+            let c = ((pos.x - origin.x) / cell_size) as usize;
+            let r = ((pos.y - origin.y) / cell_size) as usize;
+            if c < cols && r < rows {
+                cells[r * cols + c].push(i);
+            }
+        }
+
+        Self { cell_size, origin, cols, rows, cells }
+    }
+
+    /// Find the nearest point to `query` by checking the cell it falls in
+    /// plus all 8 neighbors. Returns a reference into `screen_pts`.
+    fn find_nearest<'a>(
+        &self,
+        query: egui::Pos2,
+        screen_pts: &'a [(egui::Pos2, Color32, f32, usize)],
+    ) -> Option<&'a (egui::Pos2, Color32, f32, usize)> {
+        let gc = ((query.x - self.origin.x) / self.cell_size) as isize;
+        let gr = ((query.y - self.origin.y) / self.cell_size) as isize;
+
+        let mut best_idx = None;
+        let mut best_dist = f32::MAX;
+
+        for dr in -1..=1 {
+            for dc in -1..=1 {
+                let r = gr + dr;
+                let c = gc + dc;
+                if r < 0 || c < 0 || r >= self.rows as isize || c >= self.cols as isize {
+                    continue;
+                }
+                for &pt_idx in &self.cells[r as usize * self.cols + c as usize] {
+                    let d = screen_pts[pt_idx].0.distance(query);
+                    if d < best_dist {
+                        best_dist = d;
+                        best_idx = Some(pt_idx);
+                    }
+                }
+            }
+        }
+
+        best_idx.map(|i| &screen_pts[i])
+    }
 }

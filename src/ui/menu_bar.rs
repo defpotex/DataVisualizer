@@ -116,13 +116,46 @@ fn perf_settings_ui(ui: &mut Ui, perf: &mut PerformanceSettings, theme: &AppThem
     ui.separator();
     ui.add_space(4.0);
 
-    // Read-only info row
-    let rendered = perf.max_draw_points;
+    // ── Profiler toggle ────────────────────────────────────────────────
+    ui.separator();
+    ui.add_space(4.0);
     ui.label(
-        RichText::new(format!("GPU quad batching active  ·  {} max", format_k(rendered)))
-            .color(c.accent_secondary)
+        RichText::new("PROFILER")
+            .color(c.text_secondary)
             .size(s.font_small),
     );
+    ui.add_space(4.0);
+
+    let profiler_label = if perf.show_profiler { "✓ Profiler Server" } else { "  Profiler Server" };
+    let (prof_rect, prof_resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().max(200.0), s.font_body + 10.0),
+        egui::Sense::click(),
+    );
+    if ui.is_rect_visible(prof_rect) {
+        if prof_resp.hovered() {
+            ui.painter().rect_filled(prof_rect, s.rounding - 1.0, c.widget_bg_hovered);
+        }
+        ui.painter().text(
+            prof_rect.left_center() + egui::vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            profiler_label,
+            FontId::proportional(s.font_body),
+            c.text_primary,
+        );
+    }
+    if prof_resp.clicked() {
+        perf.show_profiler = !perf.show_profiler;
+    }
+
+    if perf.show_profiler {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Serving on 127.0.0.1:8585\nConnect with puffin_viewer")
+                .color(c.accent_secondary)
+                .size(s.font_small),
+        );
+    }
+
     ui.add_space(4.0);
 }
 

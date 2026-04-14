@@ -45,6 +45,10 @@ pub struct DataVisualizerApp {
     right_pane: RightPane,
 
     central_rect: egui::Rect,
+
+    /// Puffin HTTP server — serves profiling data to the puffin_viewer app.
+    /// Kept alive as long as profiling is enabled.
+    puffin_server: Option<puffin_http::Server>,
 }
 
 impl DataVisualizerApp {
@@ -76,6 +80,7 @@ impl DataVisualizerApp {
                 egui::vec2(1100.0, 860.0),
             ),
             theme,
+            puffin_server: None,
         }
     }
 
@@ -105,9 +110,29 @@ impl eframe::App for DataVisualizerApp {
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        puffin::GlobalProfiler::lock().new_frame();
+        puffin::profile_function!();
+
+        // Start/stop the puffin HTTP server based on the profiler toggle.
+        if self.app_state.perf.show_profiler && self.puffin_server.is_none() {
+            match puffin_http::Server::new("0.0.0.0:8585") {
+                Ok(server) => {
+                    self.puffin_server = Some(server);
+                    eprintln!("Puffin profiler serving on http://127.0.0.1:8585");
+                }
+                Err(e) => eprintln!("Failed to start puffin server: {e}"),
+            }
+        } else if !self.app_state.perf.show_profiler && self.puffin_server.is_some() {
+            self.puffin_server = None;
+        }
+
         ctx.set_global_style(self.app_style.clone());
 
-        if self.app_state.poll_events() {
+        let (had_events, sync_events) = self.app_state.poll_events();
+        for evt in sync_events {
+            self.plot_area.apply_sync_event(evt);
+        }
+        if had_events {
             ctx.request_repaint();
         }
 
@@ -158,7 +183,7 @@ impl eframe::App for DataVisualizerApp {
         self.central_rect = central_response.response.rect;
 
         // ── Floating plot windows ─────────────────────────────────────────────
-        let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, self.app_state.perf.max_draw_points);
+        let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, self.app_state.perf.max_draw_points, self.app_state.selection.as_ref());
         for action in plot_actions {
             self.handle_plot_action(action);
         }
@@ -258,6 +283,12 @@ impl DataVisualizerApp {
         match action {
             PlotAction::Closed(id) => {
                 self.app_state.plots.retain(|p| p.id() != id);
+                // Clear selection if it came from the closed plot.
+                if let Some(sel) = &self.app_state.selection {
+                    if sel.plot_id == id {
+                        self.app_state.selection = None;
+                    }
+                }
             }
             PlotAction::ConfigChanged(new_config) => {
                 let id = new_config.id();
@@ -265,6 +296,29 @@ impl DataVisualizerApp {
                     *p = new_config;
                 }
                 self.plot_area.sync_plot(id, &self.app_state);
+            }
+            PlotAction::SelectionChanged(sel) => {
+                self.app_state.selection = sel;
+            }
+            PlotAction::FilterToSelection(sel) => {
+                use crate::data::filter::{Filter, FilterOp};
+                let values: Vec<String> = {
+                    let mut v: Vec<usize> = sel.indices.iter().copied().collect();
+                    v.sort_unstable();
+                    v.iter().map(|i| i.to_string()).collect()
+                };
+                let mut filter = Filter {
+                    id: 0,
+                    source_id: Some(sel.source_id),
+                    column: String::new(),
+                    op: FilterOp::RowIndices,
+                    value: values.join("|"),
+                    enabled: true,
+                };
+                filter.id = self.app_state.alloc_filter_id();
+                self.app_state.filters.push(filter);
+                self.app_state.selection = None;
+                self.plot_area.sync_all_filters(&self.app_state);
             }
         }
     }
