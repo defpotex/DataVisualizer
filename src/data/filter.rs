@@ -130,14 +130,14 @@ pub fn apply_filters_for_source(df: &DataFrame, filters: &[Filter], source_id: O
                 if filter_src != cur_src { continue; }
             }
         }
-        if let Some(filtered) = try_apply(result.clone(), f) {
+        if let Some(filtered) = try_apply(&result, f) {
             result = filtered;
         }
     }
     result
 }
 
-fn try_apply(df: DataFrame, f: &Filter) -> Option<DataFrame> {
+fn try_apply(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
     // Handle row index selection filter.
     if f.op == FilterOp::RowIndices {
         return try_apply_row_indices(df, f);
@@ -178,7 +178,7 @@ fn try_apply(df: DataFrame, f: &Filter) -> Option<DataFrame> {
     df.filter(bool_ca).ok()
 }
 
-fn try_apply_set(df: DataFrame, f: &Filter) -> Option<DataFrame> {
+fn try_apply_set(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
     let candidates: Vec<&str> = f.value.split('|')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
@@ -204,7 +204,7 @@ fn try_apply_set(df: DataFrame, f: &Filter) -> Option<DataFrame> {
     df.filter(&mask).ok()
 }
 
-fn try_apply_row_indices(df: DataFrame, f: &Filter) -> Option<DataFrame> {
+fn try_apply_row_indices(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
     let wanted: std::collections::HashSet<u64> = f.value.split('|')
         .filter_map(|s| s.trim().parse::<u64>().ok())
         .collect();

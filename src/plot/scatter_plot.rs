@@ -5,6 +5,7 @@ use crate::plot::plot_config::{AlphaConfig, AxisScale, ColorMode, Colormap, Plot
 use crate::plot::styling::{
     apply_alpha, compute_alphas, compute_colors, compute_radii, ColorLegend, PlotLegendData,
 };
+use crate::plot::spatial_grid::SpatialGrid;
 use crate::plot::sync::{CancelToken, ScatterSyncResult};
 use crate::state::app_state::DataEvent;
 use crate::theme::AppTheme;
@@ -465,7 +466,7 @@ impl ScatterPlot {
         let df = source.df.clone();
         let tx = tx.clone();
 
-        std::thread::spawn(move || {
+        rayon::spawn(move || {
             let result = compute_scatter_data(plot_id, &config, &schema, &df, &token);
             match result {
                 Some(r) => {
@@ -528,7 +529,7 @@ impl ScatterPlot {
         theme: &AppTheme,
         central_rect: Rect,
         grid_size: f32,
-        max_draw_points: usize,
+        perf: &crate::state::perf_settings::PerformanceSettings,
         _selection: Option<&crate::state::selection::SelectionSet>,
     ) -> PlotWindowEvent {
         if !self.is_open { return PlotWindowEvent::Closed; }
@@ -602,7 +603,7 @@ impl ScatterPlot {
                         Arc::clone(&self.y_labels),
                         &self.config,
                         theme,
-                        max_draw_points,
+                        perf,
                         id,
                         _selection,
                         self.context_menu_row.is_some(),
@@ -976,7 +977,7 @@ fn show_scatter(
     y_labels: Arc<Vec<String>>,
     config: &ScatterPlotConfig,
     theme: &AppTheme,
-    max_draw_points: usize,
+    perf: &crate::state::perf_settings::PerformanceSettings,
     plot_id: usize,
     selection: Option<&crate::state::selection::SelectionSet>,
     context_menu_open: bool,
@@ -992,6 +993,7 @@ fn show_scatter(
         return;
     }
 
+    let max_draw_points = perf.max_draw_points;
     let step = if max_draw_points > 0 && n > max_draw_points {
         (n / max_draw_points).max(1)
     } else {
@@ -999,19 +1001,26 @@ fn show_scatter(
     };
 
     // Apply selection dimming: when a selection is active, unselected points get reduced alpha.
+    // Cached by (plot_id, selection_version) to avoid re-allocating every frame.
     let has_selection = selection.map_or(false, |s| !s.is_empty());
     let colors = if has_selection {
         let sel = selection.unwrap();
-        let dimmed: Vec<Color32> = colors.iter().enumerate().map(|(i, &c)| {
-            let row = row_indices.get(i).copied().unwrap_or(i);
-            if sel.contains(row) {
-                c // selected: keep full color
+        let sel_ver = sel.version();
+        let cache_key = egui::Id::new(("scatter_dim_cache", plot_id));
+        let cached: Option<(u64, Arc<Vec<Color32>>)> = ui.ctx().memory(|mem| mem.data.get_temp(cache_key));
+        if let Some((ver, dimmed)) = cached {
+            if ver == sel_ver && dimmed.len() == colors.len() {
+                dimmed
             } else {
-                // dim to ~30% opacity
-                Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * 0.3) as u8)
+                let dimmed = Arc::new(compute_dimmed_colors(&colors, &row_indices, sel));
+                ui.ctx().memory_mut(|mem| mem.data.insert_temp(cache_key, (sel_ver, Arc::clone(&dimmed))));
+                dimmed
             }
-        }).collect();
-        Arc::new(dimmed)
+        } else {
+            let dimmed = Arc::new(compute_dimmed_colors(&colors, &row_indices, sel));
+            ui.ctx().memory_mut(|mem| mem.data.insert_temp(cache_key, (sel_ver, Arc::clone(&dimmed))));
+            dimmed
+        }
     } else {
         colors
     };
@@ -1174,7 +1183,7 @@ fn show_scatter(
     // ── Painter mode: paint circles and manual hover ───────────────────────────
     // Build spatial grid for O(1) nearest-point lookups (hover + click).
     let grid = if use_painter && !screen_pts.is_empty() {
-        Some(SpatialGrid::build(&screen_pts, plot_response.response.rect))
+        Some(SpatialGrid::build(&screen_pts, plot_response.response.rect, |p| p.0))
     } else {
         None
     };
@@ -1182,15 +1191,29 @@ fn show_scatter(
     if use_painter && !screen_pts.is_empty() {
         let clip = plot_response.response.rect;
         let painter = ui.painter().with_clip_rect(clip);
-        for &(pos, color, radius, _) in &screen_pts {
-            painter.circle_filled(pos, radius, color);
+
+        let use_batched = crate::plot::gpu_points::should_use_batched(
+            perf.gpu_points_mode,
+            perf.gpu_points_threshold,
+            screen_pts.len(),
+        );
+        if use_batched {
+            let mesh_shape = crate::plot::gpu_points::build_circle_mesh(
+                screen_pts.iter().map(|&(pos, color, radius, _)| (pos, radius, color)),
+                screen_pts.len(),
+            );
+            painter.add(mesh_shape);
+        } else {
+            for &(pos, color, radius, _) in &screen_pts {
+                painter.circle_filled(pos, radius, color);
+            }
         }
 
         // Manual hover tooltip (suppressed when context menu is open).
         if !context_menu_open && !ui.input(|i| i.pointer.secondary_down()) {
         if let Some(hpos) = plot_response.response.hover_pos() {
-            let nearest = grid.as_ref().unwrap().find_nearest(hpos, &screen_pts);
-            if let Some(&(pos, _, radius, idx)) = nearest {
+            let nearest = grid.as_ref().unwrap().find_nearest(hpos, &screen_pts, |p| p.0);
+            if let Some((_, &(pos, _, radius, idx))) = nearest {
                 if pos.distance(hpos) <= radius + 10.0 {
                     // Draw hover ring around nearest point (matching map plot style).
                     let clip = plot_response.response.rect;
@@ -1253,8 +1276,8 @@ fn show_scatter(
     let find_nearest = |pos: egui::Pos2| -> Option<usize> {
         if let Some(ref g) = grid {
             // Use spatial grid for O(1) lookup.
-            g.find_nearest(pos, &screen_pts)
-                .and_then(|&(pt_pos, _, radius, idx)| {
+            g.find_nearest(pos, &screen_pts, |p| p.0)
+                .and_then(|(_, &(pt_pos, _, radius, idx))| {
                     if pt_pos.distance(pos) <= radius + 10.0 { Some(idx) } else { None }
                 })
         } else {
@@ -1547,6 +1570,21 @@ fn scale_toggle(ui: &mut Ui, scale: &mut AxisScale, inferred: &AxisScale, theme:
 
 // ── Misc helpers ──────────────────────────────────────────────────────────────
 
+fn compute_dimmed_colors(
+    colors: &[Color32],
+    row_indices: &[usize],
+    sel: &crate::state::selection::SelectionSet,
+) -> Vec<Color32> {
+    colors.iter().enumerate().map(|(i, &c)| {
+        let row = row_indices.get(i).copied().unwrap_or(i);
+        if sel.contains(row) {
+            c
+        } else {
+            Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * 0.3) as u8)
+        }
+    }).collect()
+}
+
 fn format_count(n: usize) -> String {
     let s = n.to_string();
     let mut result = String::new();
@@ -1557,72 +1595,3 @@ fn format_count(n: usize) -> String {
     result.chars().rev().collect()
 }
 
-// ── Spatial grid for fast nearest-point lookups ─────────────────────────────
-
-/// A simple 2D grid that buckets screen-space points for O(1) average-case
-/// nearest-neighbor queries. Cell size is chosen so the average cell has ~4
-/// points, giving fast lookups regardless of dataset size.
-struct SpatialGrid {
-    cell_size: f32,
-    origin: egui::Pos2,
-    cols: usize,
-    rows: usize,
-    /// Each cell stores indices into the source `screen_pts` slice.
-    cells: Vec<Vec<usize>>,
-}
-
-impl SpatialGrid {
-    fn build(screen_pts: &[(egui::Pos2, Color32, f32, usize)], clip: egui::Rect) -> Self {
-        // Target ~4 points per cell; clamp cell size to [10, 80] px.
-        let n = screen_pts.len().max(1);
-        let area = clip.width() * clip.height();
-        let cell_size = (area / (n as f32 / 4.0)).sqrt().clamp(10.0, 80.0);
-        let cols = ((clip.width() / cell_size).ceil() as usize).max(1);
-        let rows = ((clip.height() / cell_size).ceil() as usize).max(1);
-        let origin = clip.min;
-        let mut cells = vec![Vec::new(); cols * rows];
-
-        for (i, &(pos, _, _, _)) in screen_pts.iter().enumerate() {
-            let c = ((pos.x - origin.x) / cell_size) as usize;
-            let r = ((pos.y - origin.y) / cell_size) as usize;
-            if c < cols && r < rows {
-                cells[r * cols + c].push(i);
-            }
-        }
-
-        Self { cell_size, origin, cols, rows, cells }
-    }
-
-    /// Find the nearest point to `query` by checking the cell it falls in
-    /// plus all 8 neighbors. Returns a reference into `screen_pts`.
-    fn find_nearest<'a>(
-        &self,
-        query: egui::Pos2,
-        screen_pts: &'a [(egui::Pos2, Color32, f32, usize)],
-    ) -> Option<&'a (egui::Pos2, Color32, f32, usize)> {
-        let gc = ((query.x - self.origin.x) / self.cell_size) as isize;
-        let gr = ((query.y - self.origin.y) / self.cell_size) as isize;
-
-        let mut best_idx = None;
-        let mut best_dist = f32::MAX;
-
-        for dr in -1..=1 {
-            for dc in -1..=1 {
-                let r = gr + dr;
-                let c = gc + dc;
-                if r < 0 || c < 0 || r >= self.rows as isize || c >= self.cols as isize {
-                    continue;
-                }
-                for &pt_idx in &self.cells[r as usize * self.cols + c as usize] {
-                    let d = screen_pts[pt_idx].0.distance(query);
-                    if d < best_dist {
-                        best_dist = d;
-                        best_idx = Some(pt_idx);
-                    }
-                }
-            }
-        }
-
-        best_idx.map(|i| &screen_pts[i])
-    }
-}

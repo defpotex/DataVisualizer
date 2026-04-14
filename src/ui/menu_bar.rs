@@ -1,5 +1,5 @@
 use crate::app::MenuAction;
-use crate::state::perf_settings::PerformanceSettings;
+use crate::state::perf_settings::{GpuPointsMode, PerformanceSettings};
 use crate::theme::AppTheme;
 use egui::{menu, Align2, Color32, FontId, RichText, Ui};
 
@@ -108,6 +108,67 @@ fn perf_settings_ui(ui: &mut Ui, perf: &mut PerformanceSettings, theme: &AppThem
     ui.add_space(2.0);
     ui.label(
         RichText::new("Drag or click to edit. Points are stride-\nsampled when dataset exceeds this limit.")
+            .color(c.text_secondary)
+            .size(s.font_small),
+    );
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    // ── Batched Mesh Rendering ────────────────────────────────────────
+    ui.label(
+        RichText::new("BATCHED RENDERING")
+            .color(c.text_secondary)
+            .size(s.font_small),
+    );
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Mode")
+                .color(c.text_primary)
+                .size(s.font_body),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let modes = [GpuPointsMode::Off, GpuPointsMode::Auto, GpuPointsMode::On];
+            let labels = ["Off", "Auto", "On"];
+            for (&mode, label) in modes.iter().zip(labels.iter()).rev() {
+                let selected = perf.gpu_points_mode == mode;
+                let btn = egui::Button::new(
+                    RichText::new(*label).size(s.font_small).color(if selected { c.text_primary } else { c.text_secondary }),
+                ).fill(if selected { c.accent_primary.linear_multiply(0.3) } else { Color32::TRANSPARENT })
+                 .rounding(s.rounding - 1.0)
+                 .min_size(egui::vec2(36.0, 0.0));
+                if ui.add(btn).clicked() {
+                    perf.gpu_points_mode = mode;
+                }
+            }
+        });
+    });
+
+    if perf.gpu_points_mode == GpuPointsMode::Auto {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Auto Threshold")
+                    .color(c.text_primary)
+                    .size(s.font_body),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut perf.gpu_points_threshold)
+                        .range(500..=100_000)
+                        .speed(500.0)
+                        .suffix(" pts"),
+                );
+            });
+        });
+    }
+
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new("Pre-tessellates circles into a single mesh\nfor faster GPU rendering of large datasets.")
             .color(c.text_secondary)
             .size(s.font_small),
     );

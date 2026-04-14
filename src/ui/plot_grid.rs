@@ -53,10 +53,10 @@ impl ManagedPlot {
     fn set_pending_snap(&mut self, pos: egui::Pos2) {
         match self { Self::Map(p) => p.set_pending_snap(pos), Self::Scatter(p) => p.set_pending_snap(pos) }
     }
-    fn show(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, max_pts: usize, selection: Option<&SelectionSet>) -> PlotWindowEvent {
+    fn show(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, perf: &crate::state::perf_settings::PerformanceSettings, selection: Option<&SelectionSet>) -> PlotWindowEvent {
         match self {
-            Self::Map(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts, selection),
-            Self::Scatter(p) => p.show_as_window(ctx, theme, central_rect, grid_size, max_pts, selection),
+            Self::Map(p) => p.show_as_window(ctx, theme, central_rect, grid_size, perf, selection),
+            Self::Scatter(p) => p.show_as_window(ctx, theme, central_rect, grid_size, perf, selection),
         }
     }
     fn sync_data_async(&mut self, source: &DataSource, filters: &[Filter], tx: &Sender<DataEvent>) {
@@ -200,14 +200,14 @@ impl PlotManager {
         theme: &AppTheme,
         central_rect: Rect,
         grid_size: f32,
-        max_draw_points: usize,
+        perf: &crate::state::perf_settings::PerformanceSettings,
         selection: Option<&SelectionSet>,
     ) -> Vec<PlotAction> {
         let mut actions: Vec<PlotAction> = Vec::new();
         let mut closed_ids: Vec<usize> = Vec::new();
 
         for plot in &mut self.plots {
-            match plot.show(ctx, theme, central_rect, grid_size, max_draw_points, selection) {
+            match plot.show(ctx, theme, central_rect, grid_size, perf, selection) {
                 PlotWindowEvent::Open => {}
                 PlotWindowEvent::Closed => {
                     closed_ids.push(plot.plot_id());

@@ -7,6 +7,7 @@ use crate::plot::scatter_plot::PlotWindowEvent;
 use crate::plot::styling::{
     apply_alpha, compute_alphas, compute_colors, compute_radii, PlotLegendData,
 };
+use crate::plot::spatial_grid::SpatialGrid;
 use crate::plot::sync::{CancelToken, MapSyncResult};
 use crate::state::app_state::DataEvent;
 use crate::theme::AppTheme;
@@ -502,7 +503,7 @@ impl MapPlot {
         let df = source.df.clone();
         let tx = tx.clone();
 
-        std::thread::spawn(move || {
+        rayon::spawn(move || {
             let result = compute_map_data(plot_id, &config, &schema, &df, &token);
             match result {
                 Some(r) => {
@@ -566,7 +567,7 @@ impl MapPlot {
         theme: &AppTheme,
         central_rect: Rect,
         grid_size: f32,
-        max_draw_points: usize,
+        perf: &crate::state::perf_settings::PerformanceSettings,
         _selection: Option<&crate::state::selection::SelectionSet>,
     ) -> PlotWindowEvent {
         if !self.is_open { return PlotWindowEvent::Closed; }
@@ -601,19 +602,29 @@ impl MapPlot {
         };
 
         // Apply selection dimming: unselected points get 30% alpha.
+        // Cached by (plot_id, selection_version) to avoid re-allocating every frame.
         let has_selection = _selection.map_or(false, |s| !s.is_empty());
         if has_selection {
             let sel = _selection.unwrap();
-            let row_indices = &self.row_indices;
-            let dimmed: Vec<Color32> = display_colors.iter().enumerate().map(|(i, &c)| {
-                let row = row_indices.get(i).copied().unwrap_or(i);
-                if sel.contains(row) {
-                    c
-                } else {
-                    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * 0.3) as u8)
-                }
-            }).collect();
-            display_colors = Arc::new(dimmed);
+            let sel_ver = sel.version();
+            let cache_key = egui::Id::new(("map_dim_cache", self.plot_id()));
+            let cached: Option<(u64, Arc<Vec<Color32>>)> = ctx.memory(|mem| mem.data.get_temp(cache_key));
+            let reuse = cached.as_ref().map_or(false, |(ver, d)| *ver == sel_ver && d.len() == display_colors.len());
+            if reuse {
+                display_colors = cached.unwrap().1;
+            } else {
+                let row_indices = &self.row_indices;
+                let dimmed: Vec<Color32> = display_colors.iter().enumerate().map(|(i, &c)| {
+                    let row = row_indices.get(i).copied().unwrap_or(i);
+                    if sel.contains(row) {
+                        c
+                    } else {
+                        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * 0.3) as u8)
+                    }
+                }).collect();
+                display_colors = Arc::new(dimmed);
+                ctx.memory_mut(|mem| mem.data.insert_temp(cache_key, (sel_ver, Arc::clone(&display_colors))));
+            }
         }
 
         let mut win = egui::Window::new(
@@ -654,7 +665,7 @@ impl MapPlot {
                         Arc::clone(&self.hover_labels),
                         Arc::clone(&self.row_indices),
                         theme,
-                        max_draw_points,
+                        perf,
                         id,
                         _selection,
                         self.context_menu_row.is_some(),
@@ -1002,7 +1013,7 @@ fn show_map(
     hover_labels: Arc<Vec<String>>,
     row_indices: Arc<Vec<usize>>,
     theme: &AppTheme,
-    max_draw_points: usize,
+    perf: &crate::state::perf_settings::PerformanceSettings,
     plot_id: usize,
     selection: Option<&crate::state::selection::SelectionSet>,
     context_menu_open: bool,
@@ -1022,8 +1033,10 @@ fn show_map(
             points: Arc::clone(&points),
             colors,
             radii: Arc::clone(&radii),
-            max_draw_points,
+            max_draw_points: perf.max_draw_points,
             plot_id,
+            gpu_points_mode: perf.gpu_points_mode,
+            gpu_points_threshold: perf.gpu_points_threshold,
         })
         .show(ui, |_ui, _response, _projector, _mem| {});
 
@@ -1049,18 +1062,17 @@ fn show_map(
         }
     }
 
-    // ── Find nearest point helper ────────────────────────────────────────
+    // ── Spatial grid for O(1) nearest-point lookups ────────────────────
+    let grid = if !screen_pts.is_empty() {
+        Some(SpatialGrid::build(&screen_pts, map_response.rect, |p| p.0))
+    } else {
+        None
+    };
     let find_nearest = |pos: Pos2| -> Option<usize> {
-        let mut best_idx = None;
-        let mut best_dist = f32::MAX;
-        for &(pt_pos, radius, idx) in &screen_pts {
-            let dist = pt_pos.distance(pos);
-            if dist <= radius + 10.0 && dist < best_dist {
-                best_dist = dist;
-                best_idx = Some(idx);
-            }
-        }
-        best_idx
+        grid.as_ref()?.find_nearest(pos, &screen_pts, |p| p.0)
+            .and_then(|(_, &(pt_pos, radius, idx))| {
+                if pt_pos.distance(pos) <= radius + 10.0 { Some(idx) } else { None }
+            })
     };
 
     let mut interaction: Option<MapInteraction> = None;
@@ -1068,22 +1080,23 @@ fn show_map(
     // Hover tooltip (suppressed when context menu is open).
     if !context_menu_open && !ui.input(|i| i.pointer.secondary_down()) {
     if let Some(hover_pos) = map_response.hover_pos() {
-        if !screen_pts.is_empty() {
-            if let Some(idx) = find_nearest(hover_pos) {
-                if let Some(label) = hover_labels.get(idx) {
-                    if !label.is_empty() {
-                        let (pos, radius, _) = *screen_pts.iter().find(|p| p.2 == idx).unwrap();
-                        let painter = ui.painter().with_clip_rect(map_response.rect);
-                        painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+        if let Some(ref g) = grid {
+            if let Some((_, &(pos, radius, idx))) = g.find_nearest(hover_pos, &screen_pts, |p| p.0) {
+                if pos.distance(hover_pos) <= radius + 10.0 {
+                    if let Some(label) = hover_labels.get(idx) {
+                        if !label.is_empty() {
+                            let painter = ui.painter().with_clip_rect(map_response.rect);
+                            painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.5, Color32::WHITE));
 
-                        egui::show_tooltip_at_pointer(
-                            ui.ctx(),
-                            egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("map_tip_layer")),
-                            egui::Id::new(("map_tip", plot_id)),
-                            |ui: &mut egui::Ui| {
-                                ui.label(RichText::new(label).size(theme.spacing.font_body));
-                            },
-                        );
+                            egui::show_tooltip_at_pointer(
+                                ui.ctx(),
+                                egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("map_tip_layer")),
+                                egui::Id::new(("map_tip", plot_id)),
+                                |ui: &mut egui::Ui| {
+                                    ui.label(RichText::new(label).size(theme.spacing.font_body));
+                                },
+                            );
+                        }
                     }
                 }
             }
@@ -1221,6 +1234,8 @@ struct PointsPlugin {
     radii: Arc<Vec<f32>>,
     max_draw_points: usize,
     plot_id: usize,
+    gpu_points_mode: crate::state::perf_settings::GpuPointsMode,
+    gpu_points_threshold: usize,
 }
 
 impl walkers::Plugin for PointsPlugin {
@@ -1244,6 +1259,8 @@ impl walkers::Plugin for PointsPlugin {
         let sampled_count = n / step;
         let mut screen_pts: Vec<(Pos2, f32, usize)> = Vec::with_capacity(sampled_count);
 
+        // First pass: project all visible points to screen space.
+        let mut draw_data: Vec<(Pos2, f32, Color32, usize)> = Vec::with_capacity(sampled_count);
         for (i, [lat, lon]) in self.points.iter().enumerate().step_by(step) {
             let r = self.radii.get(i).copied().unwrap_or(default_radius);
             let color = self.colors.get(i).copied().unwrap_or(Color32::WHITE);
@@ -1254,8 +1271,26 @@ impl walkers::Plugin for PointsPlugin {
             let expanded = rect.expand(r);
             if !expanded.contains(center) { continue; }
 
-            painter.circle_filled(center, r, color);
+            draw_data.push((center, r, color, i));
             screen_pts.push((center, r, i));
+        }
+
+        // Second pass: render using batched mesh or individual circles.
+        let use_batched = crate::plot::gpu_points::should_use_batched(
+            self.gpu_points_mode,
+            self.gpu_points_threshold,
+            draw_data.len(),
+        );
+        if use_batched {
+            let mesh_shape = crate::plot::gpu_points::build_circle_mesh(
+                draw_data.iter().map(|&(pos, r, color, _)| (pos, r, color)),
+                draw_data.len(),
+            );
+            painter.add(mesh_shape);
+        } else {
+            for &(center, r, color, _) in &draw_data {
+                painter.circle_filled(center, r, color);
+            }
         }
 
         // Store screen positions for hover lookup by show_map.

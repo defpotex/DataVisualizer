@@ -183,7 +183,7 @@ impl eframe::App for DataVisualizerApp {
         self.central_rect = central_response.response.rect;
 
         // ── Floating plot windows ─────────────────────────────────────────────
-        let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, self.app_state.perf.max_draw_points, self.app_state.selection.as_ref());
+        let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, &self.app_state.perf, self.app_state.selection.as_ref());
         for action in plot_actions {
             self.handle_plot_action(action);
         }

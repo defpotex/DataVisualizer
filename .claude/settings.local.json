@@ -16,7 +16,11 @@
       "Bash(python -c \"import sys, json; data=json.load\\(sys.stdin\\); pkg=[p for p in data['packages'] if p['name']=='egui_plot'][0]; print\\('egui_plot deps:', [\\(d['name'],d['req']\\) for d in pkg['dependencies'] if 'egui' in d['name'] or 'emath' in d['name']]\\)\")",
       "Bash(grep -r \"from_rgba_unmultiplied\" ~/.cargo/registry/src/*/egui-0.*/src/color32.rs)",
       "Bash(cargo remove:*)",
-      "Bash(cargo install:*)"
+      "Bash(cargo install:*)",
+      "Bash(grep -r \"wgpu\" target/debug/.fingerprint/eframe*/lib-*)",
+      "Bash(grep -r \"features\" target/debug/.fingerprint/eframe*/lib-*)",
+      "Bash(grep -r \"egui_wgpu\" ~/.cargo/registry/src/*/eframe-0.34.*/Cargo.toml)",
+      "Bash(grep -r \"pub struct Mesh\" ~/.cargo/registry/src/*/epaint-0.34*/)"
     ]
   }
 }

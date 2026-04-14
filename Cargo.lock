@@ -1204,6 +1204,7 @@ dependencies = [
  "polars",
  "puffin",
  "puffin_http",
+ "rayon",
  "rfd",
  "serde",
  "serde_json",

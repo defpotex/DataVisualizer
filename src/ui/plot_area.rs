@@ -55,10 +55,10 @@ impl PlotArea {
         theme: &AppTheme,
         central_rect: egui::Rect,
         grid_size: f32,
-        max_draw_points: usize,
+        perf: &crate::state::perf_settings::PerformanceSettings,
         selection: Option<&SelectionSet>,
     ) -> Vec<PlotAction> {
-        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, max_draw_points, selection)
+        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, perf, selection)
     }
 
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState, grid_size: f32) {

@@ -27,6 +27,7 @@ crossbeam-channel = "0.5"
 walkers = "0.53"
 puffin = "0.20.0"
 puffin_http = "0.17.0"
+rayon = "1.10"
 
 [profile.release]
 opt-level = 3

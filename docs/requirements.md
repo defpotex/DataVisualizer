@@ -115,6 +115,8 @@ Vehicle Track/Telemetry Visualization Application
 
 - **Print/Export Graphics**
 
+- **Loading multiple files** naming them internally, and add a reference to filename (to color plots with)
+
 
 ## Bugs to fix
 - Cant see slider in the Performance dropdown
