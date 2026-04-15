@@ -34,6 +34,12 @@ impl PlotArea {
         self.plot_manager.sync_all_filters(state);
     }
 
+    /// Re-sync all plot data, skipping plots that are already computing.
+    /// Used by the playback engine to avoid cancelling in-flight syncs every frame.
+    pub fn sync_all_filters_throttled(&mut self, state: &AppState) {
+        self.plot_manager.sync_all_filters_throttled(state);
+    }
+
     /// Re-sync data for a single plot after its config changes.
     pub fn sync_plot(&mut self, id: usize, state: &AppState) {
         self.plot_manager.sync_plot(id, state);

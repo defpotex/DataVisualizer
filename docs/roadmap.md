@@ -68,8 +68,8 @@
 - ⬜ **F3.3** Temporal filter (§3.4.1.3)
   - ⬜ F3.3.1 Time range slider
   - ⬜ F3.3.2 Linked to playback cursor
-- ⬜ **F3.4** Selection-based filter (§3.4.1.4)
-  - ⬜ F3.4.1 "Filter to selection" from plot selection
+- ✅ **F3.4** Selection-based filter (§3.4.1.4)
+  - ✅ F3.4.1 "Filter to selection" from plot selection
 - ⬜ **F3.5** Radial filter (§3.4.1.5)
   - ⬜ F3.5.1 Click point + enter radius → filter to nearby points
 - ✅ **F3.6** Filter panel in left pane (add/remove/enable/disable filters)
@@ -94,12 +94,12 @@
 - ⬜ **F5.3** Track/path rendering (connect points by time sequence)
 - ✅ **F5.4** Hover tooltip (configurable fields, §3.4.5)
 - ⬜ **F5.5** Zoom & pan (§3.4.7)
-- ⬜ **F5.6** Point selection on map
-  - ⬜ F5.6.1 Single click (§3.4.11.1)
-  - ⬜ F5.6.2 Ctrl+click multi-select (§3.4.11.2)
-  - ⬜ F5.6.3 Area drag select (§3.4.11.3)
+- ✅ **F5.6** Point selection on map
+  - ✅ F5.6.1 Single click (§3.4.11.1)
+  - ✅ F5.6.2 Ctrl+click multi-select (§3.4.11.2)
+  - ✅ F5.6.3 Area drag select (§3.4.11.3)
   - ⬜ F5.6.4 Geographic boundary select (§3.4.11.4)
-- ⬜ **F5.7** Right-click context menu (§3.4.10)
+- ✅ **F5.7** Right-click context menu (§3.4.10)
 - ⬜ **F5.8** Geographic boundary overlay (§4.1.2)
   - ⬜ F5.8.1 Render loaded boundaries on map
   - ⬜ F5.8.2 Color/aggregate data by boundary region (§4.1.2.1)
@@ -110,8 +110,8 @@
 - ✅ **F6.3** Hover tooltip (§3.4.5)
 - ✅ **F6.4** Zoom/pan (§3.4.7)
 - ✅ **F6.5** Axis labels, limits, scale (linear/log, §3.4.8)
-- ⬜ **F6.6** Point selection (single, ctrl-click, area drag, §3.4.11.1–3)
-- ⬜ **F6.7** Right-click context menu (§3.4.10)
+- ✅ **F6.6** Point selection (single, ctrl-click, area drag, §3.4.11.1–3)
+- ✅ **F6.7** Right-click context menu (§3.4.10)
 
 ### F7 — Bar Graph Plot
 - ⬜ **F7.1** Categorical or binned bar chart
@@ -181,9 +181,9 @@
 This is the sequence we follow. Each phase produces a usable, committable milestone.
 
 ```
-Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6 ──► Phase 7 ──► Phase 8+
-Foundation  Test Data   Load CSV    Map Plot    Filters    Scatter+   Styling    ...etc
-            (CSV gen +                                      Filters
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5 ──► Phase 6 ──► Phase 7 ──► Phase 8 ──► Phase 9+
+Foundation  Test Data   Load CSV    Map Plot    Filters    Scatter+   Styling    Selection  Playback
+            (CSV gen +                                      Filters               & Context
              UDP tool)
 ```
 
@@ -337,18 +337,24 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Scatter+   Styling   
 
 ---
 
-### Phase 8 — Point Selection & Context Menu ⬜
+### Phase 8 — Point Selection & Context Menu ✅
 *Goal: Select data points, right-click for context actions.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F5.6 | Map point selection | ⬜ | Single, ctrl-click, area drag |
-| F6.6 | Scatter selection | ⬜ | |
-| F5.7 | Right-click context menu | ⬜ | Map |
-| F6.7 | Right-click context menu | ⬜ | Scatter |
-| F3.4 | Filter to selection | ⬜ | |
+| F5.6 | Map point selection | ✅ | Single click, ctrl-click multi-select, area drag select |
+| F6.6 | Scatter selection | ✅ | Single click, ctrl-click, area drag; highlight ring + dimming |
+| F5.7 | Right-click context menu | ✅ | Map context menu with Filter to Selection |
+| F6.7 | Right-click context menu | ✅ | Scatter context menu with Filter to Selection |
+| F3.4 | Filter to selection | ✅ | Creates attribute filter from selected point indices |
 
-**Exit criteria:** User can drag-select points on map, right-click to filter to selection.
+**Exit criteria:** User can drag-select points on map, right-click to filter to selection. ✅
+
+**Implementation notes:**
+- `SelectionSet` tracks selected row indices; propagated via `PlotAction::SelectionChanged` / `PlotAction::FilterToSelection`
+- Selection visual feedback: highlight rings on selected points, dimming on unselected
+- Ctrl+click toggles individual points; area drag selects all points in rectangle
+- GPU batched mesh rendering added as performance optimization (Off/Auto/On toggle in Performance menu, default Auto with 5K threshold)
 
 ---
 
@@ -454,3 +460,4 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Scatter+   Styling   
 | 2026-04-09 | Phase 6 | Phase marked complete; roadmap and functional tree updated |
 | 2026-04-10 | Phase 7 | Data styling: color modes (solid/categorical/continuous), 5 colormaps, per-point size + alpha by column, configurable hover tooltips, right legend pane with collapsible per-plot cards |
 | 2026-04-10 | Phase 7 | Map plot parity: circles instead of squares, per-point size/alpha/hover, same configure dialog features as scatter |
+| 2026-04-14 | Phase 8 | Point selection & context menu: click, ctrl-click, area drag select on both map and scatter; right-click context menu with Filter to Selection; GPU batched mesh rendering (Off/Auto/On) |

@@ -20,6 +20,12 @@ pub enum FilterOp {
     /// `Filter.value` holds pipe-separated row indices: "0|3|42".
     /// `Filter.column` is ignored.
     RowIndices,
+    /// Temporal filter: keep rows where column <= value (playback cursor).
+    /// Used by the playback engine. `Filter.value` is the upper bound as f64 string.
+    TimeLe,
+    /// Temporal filter: keep rows where value is in [low, high].
+    /// Used by the playback engine with trail. `Filter.value` is "low|high".
+    TimeRange,
 }
 
 impl FilterOp {
@@ -34,6 +40,8 @@ impl FilterOp {
             FilterOp::In    => "in",
             FilterOp::NotIn => "not in",
             FilterOp::RowIndices => "selection",
+            FilterOp::TimeLe => "≤ time",
+            FilterOp::TimeRange => "time range",
         }
     }
 
@@ -81,6 +89,9 @@ impl Filter {
         if self.op == FilterOp::RowIndices {
             let count = self.value.split('|').filter(|s| !s.is_empty()).count();
             return format!("selection ({} pts)", count);
+        }
+        if self.op == FilterOp::TimeLe || self.op == FilterOp::TimeRange {
+            return format!("playback ({})", self.column);
         }
         if self.op.is_set_op() {
             let members: Vec<&str> = self.value.split('|').collect();
@@ -143,6 +154,14 @@ fn try_apply(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
         return try_apply_row_indices(df, f);
     }
 
+    // Handle temporal filters (playback engine).
+    if f.op == FilterOp::TimeLe {
+        return try_apply_time_le(df, f);
+    }
+    if f.op == FilterOp::TimeRange {
+        return try_apply_time_range(df, f);
+    }
+
     // Handle set ops (In / NotIn).
     if f.op.is_set_op() {
         return try_apply_set(df, f);
@@ -160,7 +179,7 @@ fn try_apply(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
             FilterOp::GtEq  => ca.gt_eq(val).into_series(),
             FilterOp::Lt    => ca.lt(val).into_series(),
             FilterOp::LtEq  => ca.lt_eq(val).into_series(),
-            FilterOp::In | FilterOp::NotIn | FilterOp::RowIndices => return None, // handled above
+            _ => return None, // set ops, row indices, temporal — handled above
         }
     } else {
         // String equality / inequality only.
@@ -217,6 +236,29 @@ fn try_apply_row_indices(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
     let mask: BooleanChunked = ca.into_iter()
         .map(|opt_val| opt_val.map(|v| wanted.contains(&v)))
         .collect();
+    df.filter(&mask).ok()
+}
+
+// ── Temporal filters ─────────────────────────────────────────────────────────
+
+fn try_apply_time_le(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
+    let upper: f64 = f.value.trim().parse().ok()?;
+    let col_series = df.column(&f.column).ok()?.as_series()?.clone();
+    let cast = col_series.cast(&DataType::Float64).ok()?;
+    let ca = cast.f64().ok()?;
+    let mask = ca.lt_eq(upper);
+    df.filter(&mask).ok()
+}
+
+fn try_apply_time_range(df: &DataFrame, f: &Filter) -> Option<DataFrame> {
+    let parts: Vec<&str> = f.value.split('|').collect();
+    if parts.len() != 2 { return None; }
+    let lo: f64 = parts[0].trim().parse().ok()?;
+    let hi: f64 = parts[1].trim().parse().ok()?;
+    let col_series = df.column(&f.column).ok()?.as_series()?.clone();
+    let cast = col_series.cast(&DataType::Float64).ok()?;
+    let ca = cast.f64().ok()?;
+    let mask = ca.gt_eq(lo) & ca.lt_eq(hi);
     df.filter(&mask).ok()
 }
 

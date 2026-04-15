@@ -59,6 +59,12 @@ impl ManagedPlot {
             Self::Scatter(p) => p.show_as_window(ctx, theme, central_rect, grid_size, perf, selection),
         }
     }
+    fn is_computing(&self) -> bool {
+        match self {
+            Self::Map(p) => p.is_computing(),
+            Self::Scatter(p) => p.is_computing(),
+        }
+    }
     fn sync_data_async(&mut self, source: &DataSource, filters: &[Filter], tx: &Sender<DataEvent>) {
         let filtered_df = apply_filters_for_source(&source.df, filters, Some(source.id));
         let mut tmp = source.clone();
@@ -119,7 +125,18 @@ impl PlotManager {
 
     /// Re-apply filters to all plots (call whenever filters change).
     pub fn sync_all_filters(&mut self, state: &AppState) {
+        self.sync_all_filters_inner(state, false);
+    }
+
+    /// Re-apply filters, but skip plots that are already computing.
+    /// Used by the playback engine to avoid cancelling in-flight syncs every frame.
+    pub fn sync_all_filters_throttled(&mut self, state: &AppState) {
+        self.sync_all_filters_inner(state, true);
+    }
+
+    fn sync_all_filters_inner(&mut self, state: &AppState, skip_computing: bool) {
         for plot in &mut self.plots {
+            if skip_computing && plot.is_computing() { continue; }
             if let Some(source) = state.sources.iter().find(|s| s.id == plot.source_id()) {
                 plot.sync_data_async(source, &state.filters, &state.event_tx);
             }

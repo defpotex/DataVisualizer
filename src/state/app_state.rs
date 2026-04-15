@@ -3,6 +3,7 @@ use crate::data::source::{DataSource, SourceId};
 use crate::plot::plot_config::PlotConfig;
 use crate::plot::sync::PlotSyncEvent;
 use crate::state::perf_settings::PerformanceSettings;
+use crate::state::playback::PlaybackState;
 use crate::state::selection::SelectionSet;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
@@ -49,6 +50,9 @@ pub struct AppState {
 
     /// Currently active point selection (global — one at a time).
     pub selection: Option<SelectionSet>,
+
+    /// Playback engine state for temporal replay.
+    pub playback: PlaybackState,
 }
 
 impl Default for AppState {
@@ -66,6 +70,7 @@ impl Default for AppState {
             filters: Vec::new(),
             filter_id_counter: 0,
             selection: None,
+            playback: PlaybackState::default(),
         }
     }
 }

@@ -3,6 +3,7 @@ use crate::data::filter::Filter;
 use crate::data::schema::FieldKind;
 use crate::plot::plot_config::PlotConfig;
 use crate::state::app_state::AppState;
+use crate::state::playback::{PlaybackMode, TimeUnit};
 use crate::theme::AppTheme;
 use crate::ui::add_filter_dialog::AddFilterDialog;
 use crate::ui::add_plot_dialog::AddPlotDialog;
@@ -12,6 +13,7 @@ pub struct LeftPane {
     fields_expanded: std::collections::HashSet<usize>,
     section_sources_open: bool,
     section_plots_open: bool,
+    section_playback_open: bool,
     section_filters_open: bool,
     add_plot_dialog: AddPlotDialog,
     add_filter_dialog: AddFilterDialog,
@@ -23,6 +25,7 @@ impl Default for LeftPane {
             fields_expanded: std::collections::HashSet::new(),
             section_sources_open: true,
             section_plots_open: true,
+            section_playback_open: true,
             section_filters_open: true,
             add_plot_dialog: AddPlotDialog::default(),
             add_filter_dialog: AddFilterDialog::default(),
@@ -116,6 +119,16 @@ impl LeftPane {
 
                 ui.add_space(4.0);
 
+                // ── PLAYBACK ─────────────────────────────────────────────────
+                if state.has_sources() {
+                    collapsible_section(ui, theme, "PLAYBACK", &mut self.section_playback_open, |ui| {
+                        if let Some(a) = playback_section(ui, theme, state) {
+                            action = Some(a);
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
+
                 // ── FILTERS ───────────────────────────────────────────────────
                 collapsible_section(ui, theme, "FILTERS", &mut self.section_filters_open, |ui| {
                     ui.add_space(4.0);
@@ -128,7 +141,13 @@ impl LeftPane {
                         self.add_filter_dialog.open();
                     }
 
-                    if state.filters.is_empty() {
+                    // Hide the managed playback filter from the user filter list.
+                    let user_filters: Vec<&Filter> = state
+                        .filters
+                        .iter()
+                        .filter(|f| f.id != usize::MAX)
+                        .collect();
+                    if user_filters.is_empty() {
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new("No active filters.")
@@ -137,7 +156,7 @@ impl LeftPane {
                                 .italics(),
                         );
                     } else {
-                        for filter in &state.filters {
+                        for filter in user_filters {
                             ui.add_space(4.0);
                             if let Some(a) = filter_card(ui, theme, filter) {
                                 action = Some(a);
@@ -335,6 +354,327 @@ fn filter_card(ui: &mut Ui, theme: &AppTheme, filter: &Filter) -> Option<PaneAct
             });
         });
     action
+}
+
+// ── Playback section ─────────────────────────────────────────────────────────
+
+fn playback_section(ui: &mut Ui, theme: &AppTheme, state: &AppState) -> Option<PaneAction> {
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    let playback = &state.playback;
+    let mut action = None;
+
+    ui.add_space(4.0);
+
+    if !playback.is_active() {
+        // Show source selector to start playback
+        ui.label(
+            RichText::new("Select a source to begin playback:")
+                .color(c.text_secondary)
+                .size(s.font_small),
+        );
+        ui.add_space(4.0);
+
+        for source in &state.sources {
+            // Check if source has a timestamp column
+            let has_time = source.schema.fields.iter().any(|f| f.kind == FieldKind::Timestamp);
+            let label = if has_time {
+                format!("▶  {}", source.label)
+            } else {
+                format!("   {}  (no timestamp)", source.label)
+            };
+            let btn = egui::Button::new(
+                RichText::new(&label)
+                    .color(if has_time { c.accent_primary } else { c.text_secondary })
+                    .size(s.font_small),
+            )
+            .min_size(egui::vec2(ui.available_width(), 0.0));
+            if ui.add_enabled(has_time, btn).clicked() {
+                action = Some(PaneAction::PlaybackStart(source.id));
+            }
+        }
+    } else {
+        // Active playback controls
+        let source = playback
+            .source_id
+            .and_then(|id| state.sources.iter().find(|s| s.id == id));
+        let source_label = source.map(|s| s.label.as_str()).unwrap_or("(unknown)");
+        let time_col = playback
+            .time_column
+            .as_deref()
+            .unwrap_or("(none)");
+
+        ui.label(
+            RichText::new(format!("Source: {}", source_label))
+                .color(c.text_primary)
+                .size(s.font_small)
+                .strong(),
+        );
+
+        // Column selector — list all numeric columns from the source
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Column:")
+                    .color(c.text_secondary)
+                    .size(s.font_small),
+            );
+            let numeric_cols: Vec<String> = source
+                .map(|src| {
+                    src.schema
+                        .fields
+                        .iter()
+                        .filter(|f| f.kind.is_numeric())
+                        .map(|f| f.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut selected = time_col.to_string();
+            let combo = egui::ComboBox::from_id_salt("playback_col")
+                .width(ui.available_width() - 4.0)
+                .selected_text(
+                    RichText::new(&selected).size(s.font_small),
+                );
+            combo.show_ui(ui, |ui| {
+                for col in &numeric_cols {
+                    if ui.selectable_label(*col == selected, col).clicked() {
+                        selected = col.clone();
+                    }
+                }
+            });
+            if selected != time_col {
+                action = Some(PaneAction::PlaybackColumnChanged(selected));
+            }
+        });
+        ui.add_space(6.0);
+
+        // ── Transport controls ───────────────────────────────────
+        ui.horizontal(|ui| {
+            let btn_size = egui::vec2(28.0, 22.0);
+            // Jump to start
+            if ui
+                .add(egui::Button::new(
+                    RichText::new("|◁").color(c.text_primary).size(s.font_small),
+                ).min_size(btn_size))
+                .clicked()
+            {
+                action = Some(PaneAction::PlaybackJumpStart);
+            }
+            // Step backward
+            if ui
+                .add(egui::Button::new(
+                    RichText::new("◁").color(c.text_primary).size(s.font_small),
+                ).min_size(btn_size))
+                .clicked()
+            {
+                action = Some(PaneAction::PlaybackStepBackward);
+            }
+            // Play/Pause
+            let play_label = if playback.is_playing() { "⏸" } else { "▶" };
+            if ui
+                .add(egui::Button::new(
+                    RichText::new(play_label)
+                        .color(c.accent_primary)
+                        .size(s.font_body),
+                ).min_size(btn_size))
+                .clicked()
+            {
+                action = Some(PaneAction::PlaybackToggle);
+            }
+            // Step forward
+            if ui
+                .add(egui::Button::new(
+                    RichText::new("▷").color(c.text_primary).size(s.font_small),
+                ).min_size(btn_size))
+                .clicked()
+            {
+                action = Some(PaneAction::PlaybackStepForward);
+            }
+            // Jump to end
+            if ui
+                .add(egui::Button::new(
+                    RichText::new("▷|").color(c.text_primary).size(s.font_small),
+                ).min_size(btn_size))
+                .clicked()
+            {
+                action = Some(PaneAction::PlaybackJumpEnd);
+            }
+        });
+
+        ui.add_space(4.0);
+
+        // ── Time scrubber ────────────────────────────────────────
+        let mut progress = playback.progress();
+        let slider_resp = ui.add(
+            egui::Slider::new(&mut progress, 0.0..=1.0)
+                .show_value(false)
+                .trailing_fill(true),
+        );
+        if slider_resp.changed() {
+            let t = playback.time_range.0 + progress as f64 * playback.duration();
+            action = Some(PaneAction::PlaybackSeek(t));
+        }
+
+        // Time display
+        let elapsed = playback.current_time - playback.time_range.0;
+        let total = playback.duration();
+        let time_str = match playback.time_unit {
+            TimeUnit::Seconds => format!(
+                "{} / {}",
+                format_duration(elapsed),
+                format_duration(total),
+            ),
+            TimeUnit::Raw => format!(
+                "{} / {}",
+                format_raw_value(playback.current_time),
+                format_raw_value(playback.time_range.1),
+            ),
+        };
+        ui.label(
+            RichText::new(time_str)
+                .color(c.text_secondary)
+                .size(s.font_small)
+                .monospace(),
+        );
+
+        ui.add_space(6.0);
+
+        // ── Speed control ────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Speed")
+                    .color(c.text_primary)
+                    .size(s.font_small),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let speeds = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0, 100.0];
+                for &spd in speeds.iter().rev() {
+                    let selected = (playback.speed - spd).abs() < 0.01;
+                    let label = if spd >= 1.0 {
+                        format!("{}x", spd as u32)
+                    } else {
+                        format!("{:.1}x", spd)
+                    };
+                    let btn = egui::Button::new(
+                        RichText::new(&label)
+                            .size(s.font_small - 1.0)
+                            .color(if selected { c.text_primary } else { c.text_secondary }),
+                    )
+                    .fill(if selected {
+                        c.accent_primary.linear_multiply(0.3)
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    })
+                    .rounding(s.rounding - 1.0)
+                    .min_size(egui::vec2(0.0, 0.0));
+                    if ui.add(btn).clicked() {
+                        action = Some(PaneAction::PlaybackSpeedChanged(spd));
+                    }
+                }
+            });
+        });
+
+        ui.add_space(4.0);
+
+        // ── Trail duration ───────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Trail")
+                    .color(c.text_primary)
+                    .size(s.font_small),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let trail_val_f64 = playback.trail_duration.unwrap_or(0.0);
+                let mut trail_val = trail_val_f64 as f32;
+                let max_trail = playback.duration() as f32;
+                let drag_speed = if playback.time_unit == TimeUnit::Seconds { 1.0 } else { max_trail * 0.005 };
+                let mut drag_builder = egui::DragValue::new(&mut trail_val)
+                    .range(0.0..=max_trail)
+                    .speed(drag_speed);
+                if playback.time_unit == TimeUnit::Seconds {
+                    drag_builder = drag_builder.suffix(" s");
+                }
+                let drag = ui.add(drag_builder);
+                if drag.changed() {
+                    let new_trail = if trail_val <= 0.0 {
+                        None
+                    } else {
+                        Some(trail_val as f64)
+                    };
+                    action = Some(PaneAction::PlaybackTrailChanged(new_trail));
+                }
+            });
+        });
+        ui.label(
+            RichText::new("0 = show all history up to cursor")
+                .color(c.text_secondary)
+                .size(s.font_small - 1.0),
+        );
+
+        ui.add_space(4.0);
+
+        // ── Loop toggle ──────────────────────────────────────────
+        ui.horizontal(|ui| {
+            let loop_label = if playback.loop_enabled { "✓ Loop" } else { "  Loop" };
+            if ui
+                .add(egui::Button::new(
+                    RichText::new(loop_label).color(c.text_primary).size(s.font_small),
+                ).frame(false))
+                .clicked()
+            {
+                action = Some(PaneAction::PlaybackLoopToggle);
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+
+        // ── Stop button ──────────────────────────────────────────
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("Stop Playback")
+                        .color(c.accent_warning)
+                        .size(s.font_small),
+                )
+                .min_size(egui::vec2(ui.available_width(), 0.0)),
+            )
+            .clicked()
+        {
+            action = Some(PaneAction::PlaybackStop);
+        }
+    }
+
+    ui.add_space(6.0);
+    action
+}
+
+/// Format seconds as HH:MM:SS or MM:SS.
+fn format_duration(secs: f64) -> String {
+    let total = secs.abs() as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// Format a raw numeric value compactly (no unit suffix).
+fn format_raw_value(v: f64) -> String {
+    if v.abs() >= 1_000_000.0 {
+        format!("{:.0}", v)
+    } else if v.abs() >= 1.0 || v == 0.0 {
+        // Show up to 2 decimal places, trim trailing zeros
+        let s = format!("{:.2}", v);
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        s.to_string()
+    } else {
+        format!("{:.4}", v)
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

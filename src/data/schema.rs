@@ -31,6 +31,21 @@ impl FieldKind {
         }
     }
 
+    /// Whether this kind represents a numeric value (castable to f64).
+    pub fn is_numeric(&self) -> bool {
+        matches!(
+            self,
+            FieldKind::Timestamp
+                | FieldKind::Latitude
+                | FieldKind::Longitude
+                | FieldKind::Altitude
+                | FieldKind::Speed
+                | FieldKind::Heading
+                | FieldKind::Integer
+                | FieldKind::Float
+        )
+    }
+
     /// Short label shown after the icon.
     pub fn label(&self) -> &'static str {
         match self {

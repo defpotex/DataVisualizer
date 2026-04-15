@@ -457,6 +457,8 @@ pub struct MapPlot {
 
     /// True while a background thread is computing plot data.
     computing: bool,
+    /// True once the first sync result has arrived (suppresses overlay during playback).
+    has_loaded: bool,
     /// Token to cancel a running background sync.
     cancel_token: CancelToken,
 }
@@ -481,6 +483,7 @@ impl MapPlot {
             context_menu_row: None,
             context_menu_pos: None,
             computing: false,
+            has_loaded: false,
             cancel_token: CancelToken::new(),
         }
     }
@@ -530,6 +533,7 @@ impl MapPlot {
         self.row_indices = Arc::new(result.row_indices);
         self.legend = Some(result.legend);
         self.computing = false;
+        self.has_loaded = true;
     }
 
     /// Cancel any in-flight background sync.
@@ -645,13 +649,13 @@ impl MapPlot {
 
         if let Some(snapped_pos) = snap { win = win.current_pos(snapped_pos); }
 
-        let computing = self.computing;
+        let show_overlay = self.computing && !self.has_loaded;
         let mut cancel_clicked = false;
         win.show(ctx, |ui| {
             ui.push_id(id, |ui| {
                 gear_clicked = show_toolbar(ui, &self.config, self.points.len(), theme);
                 ui.separator();
-                if computing {
+                if show_overlay {
                     show_computing_overlay(ui, theme, &mut cancel_clicked);
                 } else {
                     show_map(
