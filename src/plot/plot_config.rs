@@ -90,7 +90,19 @@ pub enum ColorMode {
     /// Points are colored by distinct values in a column — one color per unique value.
     Categorical { col: String },
     /// Points are colored by a numeric column mapped through a colormap.
-    Continuous { col: String, colormap: Colormap },
+    Continuous {
+        col: String,
+        colormap: Colormap,
+        /// User-specified minimum value for color mapping (None = auto from data).
+        #[serde(default)]
+        color_min: Option<f64>,
+        /// User-specified maximum value for color mapping (None = auto from data).
+        #[serde(default)]
+        color_max: Option<f64>,
+        /// Reverse the colormap direction.
+        #[serde(default)]
+        reverse: bool,
+    },
 }
 
 impl Default for ColorMode {

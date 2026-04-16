@@ -53,6 +53,11 @@ struct MapConfigDialog {
     draft_color_variant: usize,
     draft_color_col_idx: usize,
     draft_colormap: Colormap,
+    draft_color_min_enabled: bool,
+    draft_color_min: f64,
+    draft_color_max_enabled: bool,
+    draft_color_max: f64,
+    draft_color_reverse: bool,
     // Size
     draft_size_enabled: bool,
     draft_size_col_idx: usize,
@@ -78,6 +83,11 @@ impl Default for MapConfigDialog {
             draft_color_variant: 0,
             draft_color_col_idx: 0,
             draft_colormap: Colormap::Viridis,
+            draft_color_min_enabled: false,
+            draft_color_min: 0.0,
+            draft_color_max_enabled: false,
+            draft_color_max: 1.0,
+            draft_color_reverse: false,
             draft_size_enabled: false,
             draft_size_col_idx: 0,
             draft_size_min_px: 2.0,
@@ -108,8 +118,19 @@ impl MapConfigDialog {
         };
         let all_fields = &schema.fields;
         self.draft_color_col_idx = all_fields.iter().position(|f| f.name == color_col).unwrap_or(0);
-        if let ColorMode::Continuous { colormap, .. } = &config.color_mode {
+        if let ColorMode::Continuous { colormap, color_min, color_max, reverse, .. } = &config.color_mode {
             self.draft_colormap = colormap.clone();
+            self.draft_color_min_enabled = color_min.is_some();
+            self.draft_color_min = color_min.unwrap_or(0.0);
+            self.draft_color_max_enabled = color_max.is_some();
+            self.draft_color_max = color_max.unwrap_or(1.0);
+            self.draft_color_reverse = *reverse;
+        } else {
+            self.draft_color_min_enabled = false;
+            self.draft_color_min = 0.0;
+            self.draft_color_max_enabled = false;
+            self.draft_color_max = 1.0;
+            self.draft_color_reverse = false;
         }
 
         if let Some(sz) = &config.size_config {
@@ -258,7 +279,25 @@ impl MapConfigDialog {
                     ui.add_space(6.0);
                     ui.label(RichText::new("Colormap").color(c.text_secondary).size(s.font_small));
                     ui.add_space(2.0);
-                    colormap_combo(ui, "cfg_map_colormap", &mut self.draft_colormap, theme);
+                    colormap_combo(ui, "cfg_map_colormap", &mut self.draft_colormap, self.draft_color_reverse, theme);
+
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.draft_color_min_enabled,
+                            RichText::new("Min").color(c.text_secondary).size(s.font_small));
+                        if self.draft_color_min_enabled {
+                            ui.add(egui::DragValue::new(&mut self.draft_color_min).speed(0.1));
+                        }
+                        ui.add_space(12.0);
+                        ui.checkbox(&mut self.draft_color_max_enabled,
+                            RichText::new("Max").color(c.text_secondary).size(s.font_small));
+                        if self.draft_color_max_enabled {
+                            ui.add(egui::DragValue::new(&mut self.draft_color_max).speed(0.1));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut self.draft_color_reverse,
+                        RichText::new("Reverse colormap").color(c.text_secondary).size(s.font_small));
                 }
 
                 ui.add_space(10.0);
@@ -373,6 +412,9 @@ impl MapConfigDialog {
                             2 => ColorMode::Continuous {
                                 col: all_fields.get(self.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
                                 colormap: self.draft_colormap.clone(),
+                                color_min: if self.draft_color_min_enabled { Some(self.draft_color_min) } else { None },
+                                color_max: if self.draft_color_max_enabled { Some(self.draft_color_max) } else { None },
+                                reverse: self.draft_color_reverse,
                             },
                             _ => ColorMode::Solid,
                         };
@@ -1361,16 +1403,39 @@ fn field_combo(ui: &mut Ui, id: &str, fields: &[crate::data::schema::FieldMeta],
         });
 }
 
-fn colormap_combo(ui: &mut Ui, id: &str, colormap: &mut Colormap, theme: &AppTheme) {
+fn colormap_combo(ui: &mut Ui, id: &str, colormap: &mut Colormap, reverse: bool, theme: &AppTheme) {
+    use crate::plot::colormap::sample_gradient;
+
     let c = &theme.colors;
     let s = &theme.spacing;
+    let swatch_w = 60.0_f32;
+    let swatch_h = s.font_body;
+
     egui::ComboBox::from_id_salt(id)
         .selected_text(RichText::new(colormap.label()).color(c.text_primary).size(s.font_body))
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             for cm in Colormap::all() {
-                ui.selectable_value(colormap, cm.clone(),
-                    RichText::new(cm.label()).color(c.text_primary).size(s.font_body));
+                let is_selected = *colormap == *cm;
+                let resp = ui.horizontal(|ui| {
+                    let text_resp = ui.selectable_label(is_selected,
+                        RichText::new(cm.label()).color(c.text_primary).size(s.font_body));
+                    let (rect, _) = ui.allocate_exact_size(vec2(swatch_w, swatch_h), egui::Sense::hover());
+                    let samples = sample_gradient(cm, 32);
+                    let step_w = rect.width() / 32.0;
+                    let painter = ui.painter();
+                    for (i, color) in samples.iter().enumerate() {
+                        let idx = if reverse { 31 - i } else { i };
+                        let x = rect.min.x + idx as f32 * step_w;
+                        let strip = Rect::from_min_size(egui::pos2(x, rect.min.y), vec2(step_w.ceil() + 0.5, rect.height()));
+                        painter.rect_filled(strip, 0.0, *color);
+                    }
+                    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Outside);
+                    text_resp
+                });
+                if resp.inner.clicked() {
+                    *colormap = cm.clone();
+                }
             }
         });
 }

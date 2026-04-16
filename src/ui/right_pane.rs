@@ -136,9 +136,10 @@ impl RightPane {
                         }
                     }
 
-                    ColorLegend::Continuous { col, colormap, data_min, data_max } => {
+                    ColorLegend::Continuous { col, colormap, data_min, data_max, reverse } => {
+                        let rev_label = if *reverse { " ↔" } else { "" };
                         ui.label(
-                            RichText::new(format!("Color: {col}  ({})", colormap.label()))
+                            RichText::new(format!("Color: {col}  ({}{})", colormap.label(), rev_label))
                                 .color(c.text_secondary)
                                 .size(s.font_small),
                         );
@@ -152,7 +153,7 @@ impl RightPane {
                             egui::Sense::hover(),
                         );
                         if ui.is_rect_visible(rect) {
-                            draw_gradient_bar(ui, rect, colormap);
+                            draw_gradient_bar(ui, rect, colormap, *reverse);
                         }
                         ui.add_space(2.0);
 
@@ -239,14 +240,15 @@ fn color_swatch(ui: &mut Ui, color: Color32, size: f32) {
     }
 }
 
-fn draw_gradient_bar(ui: &Ui, rect: egui::Rect, colormap: &crate::plot::plot_config::Colormap) {
+fn draw_gradient_bar(ui: &Ui, rect: egui::Rect, colormap: &crate::plot::plot_config::Colormap, reverse: bool) {
     let steps = 64_usize;
     let samples = sample_gradient(colormap, steps);
     let step_w = rect.width() / steps as f32;
     let painter = ui.painter();
     painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Outside);
     for (i, color) in samples.iter().enumerate() {
-        let x = rect.min.x + i as f32 * step_w;
+        let idx = if reverse { steps - 1 - i } else { i };
+        let x = rect.min.x + idx as f32 * step_w;
         let strip = egui::Rect::from_min_size(
             egui::pos2(x, rect.min.y),
             egui::vec2(step_w.ceil() + 0.5, rect.height()),

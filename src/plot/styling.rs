@@ -34,7 +34,7 @@ pub fn categorical_color(idx: usize) -> Color32 {
 pub enum ColorLegend {
     Solid { color: Color32 },
     Categorical { col: String, entries: Vec<(String, Color32)> },
-    Continuous   { col: String, colormap: Colormap, data_min: f64, data_max: f64 },
+    Continuous   { col: String, colormap: Colormap, data_min: f64, data_max: f64, reverse: bool },
 }
 
 /// Computed size legend metadata.
@@ -86,8 +86,8 @@ pub fn compute_colors(
             (vec![c; n], ColorLegend::Solid { color: solid_color }, Vec::new())
         }
         ColorMode::Categorical { col } => compute_categorical_colors(df, col, n, solid_color),
-        ColorMode::Continuous { col, colormap } => {
-            let (colors, legend) = compute_continuous_colors(df, col, colormap, n, solid_color);
+        ColorMode::Continuous { col, colormap, color_min, color_max, reverse } => {
+            let (colors, legend) = compute_continuous_colors(df, col, colormap, n, solid_color, *color_min, *color_max, *reverse);
             (colors, legend, Vec::new())
         }
     }
@@ -159,6 +159,9 @@ fn compute_continuous_colors(
     colormap: &Colormap,
     n: usize,
     fallback: Color32,
+    user_min: Option<f64>,
+    user_max: Option<f64>,
+    reverse: bool,
 ) -> (Vec<Color32>, ColorLegend) {
     let vals = match get_f64_vec(df, col) {
         Some(v) => v,
@@ -171,22 +174,27 @@ fn compute_continuous_colors(
     };
 
     let finite: Vec<f64> = vals.iter().flatten().copied().collect();
-    let data_min = finite.iter().copied().fold(f64::INFINITY, f64::min);
-    let data_max = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let range = data_max - data_min;
+    let auto_min = finite.iter().copied().fold(f64::INFINITY, f64::min);
+    let auto_max = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    // Use user overrides if provided, otherwise auto-detect from data.
+    let eff_min = user_min.unwrap_or(if auto_min.is_finite() { auto_min } else { 0.0 });
+    let eff_max = user_max.unwrap_or(if auto_max.is_finite() { auto_max } else { 1.0 });
+    let range = eff_max - eff_min;
 
     let colors: Vec<Color32> = vals
         .iter()
         .map(|opt| {
-            let t = opt
+            let mut t = opt
                 .map(|v| {
                     if range > 0.0 {
-                        ((v - data_min) / range).clamp(0.0, 1.0)
+                        ((v - eff_min) / range).clamp(0.0, 1.0)
                     } else {
                         0.5
                     }
                 })
                 .unwrap_or(0.5);
+            if reverse { t = 1.0 - t; }
             colormap_eval(colormap, t)
         })
         .collect();
@@ -196,8 +204,9 @@ fn compute_continuous_colors(
         ColorLegend::Continuous {
             col: col.to_string(),
             colormap: colormap.clone(),
-            data_min: if data_min.is_finite() { data_min } else { 0.0 },
-            data_max: if data_max.is_finite() { data_max } else { 1.0 },
+            data_min: eff_min,
+            data_max: eff_max,
+            reverse,
         },
     )
 }

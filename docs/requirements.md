@@ -136,6 +136,4 @@ Vehicle Track/Telemetry Visualization Application
 - size input - has min/max - should have option to tie to min/max value or min/max of dataset (default)
 - Tooltip - autosize to fit content
 - Some categorical selections not visible/available in selection lists
-
- 
-- 
+- Alignment of color swatches in color dropdown
