@@ -35,7 +35,10 @@ impl MenuBar {
                         ui.close();
                     }
                     menu_entry_disabled(ui, "Parquet File…", "", theme);
-                    menu_entry_disabled(ui, "UDP Stream…", "", theme);
+                    if menu_entry(ui, "UDP Stream…", "", theme) {
+                        action = Some(MenuAction::OpenUdpStream);
+                        ui.close();
+                    }
                     menu_entry_disabled(ui, "ADS-B Stream…", "", theme);
                     ui.separator();
                     menu_entry_disabled(ui, "Manage Sources…", "", theme);

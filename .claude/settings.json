@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -B2 -A5 \"pub fn new\" /c/Users/Jeremy/.cargo/registry/src/*/egui_plot-0.35*/src/items/mod.rs)",
+      "Bash(grep -B2 -A8 \"pub fn new\" /c/Users/Jeremy/.cargo/registry/src/*/egui_plot-0.35*/src/items/line.rs)",
+      "Bash(grep -B2 -A8 \"pub fn new\" /c/Users/Jeremy/.cargo/registry/src/*/egui_plot-0.35*/src/items/polygon.rs)",
+      "Bash(grep -B2 -A10 \"impl.*Line<\" /c/Users/Jeremy/.cargo/registry/src/*/egui_plot-0.35*/src/items/line.rs)",
+      "Bash(grep -r \"pub fn new\" /c/Users/Jeremy/.cargo/registry/src/*/egui_plot-0.35*/src/items/*.rs)"
+    ]
+  }
+}

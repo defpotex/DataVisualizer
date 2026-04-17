@@ -65,9 +65,9 @@
   - ⬜ F3.1.2 Multi-condition (AND/OR)
 - ⬜ **F3.2** Geographic boundary filter (§3.4.1.2)
   - ⬜ F3.2.1 Filter points inside/outside a loaded boundary
-- ⬜ **F3.3** Temporal filter (§3.4.1.3)
-  - ⬜ F3.3.1 Time range slider
-  - ⬜ F3.3.2 Linked to playback cursor
+- ✅ **F3.3** Temporal filter (§3.4.1.3)
+  - ✅ F3.3.1 Time range slider
+  - ✅ F3.3.2 Linked to playback cursor
 - ✅ **F3.4** Selection-based filter (§3.4.1.4)
   - ✅ F3.4.1 "Filter to selection" from plot selection
 - ⬜ **F3.5** Radial filter (§3.4.1.5)
@@ -140,11 +140,11 @@
   - ⬜ F9.5.3 Aggregate functions: count, mean, max, min
 
 ### F10 — Playback & Streaming Controls
-- ⬜ **F10.1** Treat static files as streaming (§3.5)
-  - ⬜ F10.1.1 Playback scrubber (time slider)
-  - ⬜ F10.1.2 Play / Pause / Step Forward / Step Back / Jump to End
-- ⬜ **F10.2** Playback speed control (§3.5.1) — 0.1x to 100x
-- ⬜ **F10.3** Data timeout duration (§3.5.2) — "trail" window per track
+- ✅ **F10.1** Treat static files as streaming (§3.5)
+  - ✅ F10.1.1 Playback scrubber (time slider)
+  - ✅ F10.1.2 Play / Pause / Step Forward / Step Back / Jump to End
+- ✅ **F10.2** Playback speed control (§3.5.1) — 0.1x to 100x
+- ✅ **F10.3** Data timeout duration (§3.5.2) — "trail" window per track
 - ⬜ **F10.4** Live streaming controls (pause/resume UDP ingestion)
 
 ### F11 — Session Persistence
@@ -358,31 +358,39 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Scatter+   Styling   
 
 ---
 
-### Phase 9 — Playback Engine ⬜
+### Phase 9 — Playback Engine ✅
 *Goal: Replay static CSV as streaming data with time controls.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F10.1 | Playback scrubber | ⬜ | Time slider over data |
-| F10.1.2 | Play/Pause/Step/Jump | ⬜ | |
-| F10.2 | Speed control | ⬜ | 0.1x–100x |
-| F10.3 | Data timeout / trail | ⬜ | Show last N seconds per track |
-| F3.3 | Temporal filter | ⬜ | Linked to playback cursor |
+| F10.1 | Playback scrubber | ✅ | Time slider with progress bar; linked to temporal filter |
+| F10.1.2 | Play/Pause/Step/Jump | ✅ | Full transport controls; keyboard Space shortcut |
+| F10.2 | Speed control | ✅ | 0.1x–100x speed buttons in left pane |
+| F10.3 | Data timeout / trail | ✅ | Configurable trail duration; 0 = all history |
+| F3.3 | Temporal filter | ✅ | TimeLe/TimeRange filter ops linked to playback cursor |
+| — | Color bar config | ✅ | Min/max overrides + reverse + inline gradient swatches in colormap dropdown |
 
-**Exit criteria:** User loads CSV, presses Play, sees points animate across the map with speed control.
+**Exit criteria:** User loads CSV, presses Play, sees points animate across the map with speed control. ✅
+
+**Implementation notes:**
+- `PlaybackState` in `src/state/playback.rs`: mode (Stopped/Playing/Paused), source_id, time_column, current_time, speed, trail_duration, loop_enabled, time_unit (Seconds/Raw)
+- Managed temporal filter (ID = `usize::MAX`) created/updated each frame during playback; hidden from user filter list
+- `sync_all_filters_throttled()` avoids cancelling in-flight background syncs during rapid playback advances
+- `has_loaded` flag on map/scatter plots prevents flickering "Computing" overlay when playback yields empty time slices
+- `ColorMode::Continuous` extended with `color_min`, `color_max`, `reverse`; colormap dropdown shows inline 32-sample gradient swatches
 
 ---
 
-### Phase 10 — UDP Streaming ⬜
+### Phase 10 — UDP Streaming 🔵
 *Goal: Real-time live data ingestion. Use the UDP Replay Streamer from Phase 3 to drive this.*
 
 | ID | Feature | Status | Notes |
 |---|---|---|---|
-| F2.4 | UDP stream ingestion | ⬜ | Configure + start/stop |
-| F2.4.3 | Rolling buffer | ⬜ | Configurable max rows |
-| F10.4 | Live streaming controls | ⬜ | Pause/resume |
-| F8.1 | Scroll chart | ⬜ | Rolling time-series |
-| F8.3 | Threshold / tripwires | ⬜ | Color change above/below |
+| F2.4 | UDP stream ingestion | 🔵 | Configure + start/stop |
+| F2.4.3 | Rolling buffer | 🔵 | Configurable max rows |
+| F10.4 | Live streaming controls | 🔵 | Pause/resume |
+| F8.1 | Scroll chart | 🔵 | Rolling time-series |
+| F8.3 | Threshold / tripwires | 🔵 | Color change above/below |
 
 **Exit criteria:** App receives UDP packets, scroll chart shows real-time data, threshold changes chart color.
 
@@ -461,3 +469,6 @@ Foundation  Test Data   Load CSV    Map Plot    Filters    Scatter+   Styling   
 | 2026-04-10 | Phase 7 | Data styling: color modes (solid/categorical/continuous), 5 colormaps, per-point size + alpha by column, configurable hover tooltips, right legend pane with collapsible per-plot cards |
 | 2026-04-10 | Phase 7 | Map plot parity: circles instead of squares, per-point size/alpha/hover, same configure dialog features as scatter |
 | 2026-04-14 | Phase 8 | Point selection & context menu: click, ctrl-click, area drag select on both map and scatter; right-click context menu with Filter to Selection; GPU batched mesh rendering (Off/Auto/On) |
+| 2026-04-15 | Phase 9 | Playback engine: time scrubber, play/pause/step/jump transport, 0.1x–100x speed, trail duration, loop, temporal filters (TimeLe/TimeRange), keyboard Space shortcut, throttled sync, has_loaded anti-flicker |
+| 2026-04-15 | Phase 9 | Color bar enhancements: min/max overrides, reverse toggle, inline 32-sample gradient swatches in colormap dropdown |
+| 2026-04-15 | Phase 10 | Started: UDP streaming, scroll chart, threshold/tripwires |

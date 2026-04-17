@@ -212,6 +212,57 @@ pub struct ScatterPlotConfig {
     pub hover_fields: Vec<String>,
 }
 
+// ── Threshold ────────────────────────────────────────────────────────────────
+
+/// A threshold/tripwire line on a scroll chart. When the value crosses this
+/// threshold, the chart region color changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Threshold {
+    /// The Y value for the horizontal threshold line.
+    pub value: f64,
+    /// Color to fill the chart region above this threshold (RGBA).
+    pub above_color: [u8; 4],
+    /// Color to fill the chart region below this threshold (RGBA).
+    pub below_color: [u8; 4],
+    /// Label shown next to the threshold line.
+    pub label: String,
+}
+
+impl Default for Threshold {
+    fn default() -> Self {
+        Self {
+            value: 0.0,
+            above_color: [255, 85, 85, 40],   // red tint
+            below_color: [80, 225, 130, 40],   // green tint
+            label: String::new(),
+        }
+    }
+}
+
+// ── ScrollChartConfig ────────────────────────────────────────────────────────
+
+/// Configuration for a rolling time-series scroll chart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScrollChartConfig {
+    pub id: usize,
+    pub title: String,
+    pub source_id: SourceId,
+    /// Column used for the X (time) axis.
+    pub time_col: String,
+    /// Columns to plot as Y series.
+    pub y_cols: Vec<String>,
+    /// Number of seconds (or raw units) of history to show.
+    #[serde(default = "default_window_secs")]
+    pub window_secs: f64,
+    /// Threshold/tripwire lines.
+    #[serde(default)]
+    pub thresholds: Vec<Threshold>,
+}
+
+fn default_window_secs() -> f64 {
+    60.0
+}
+
 // ── PlotConfig ────────────────────────────────────────────────────────────────
 
 /// Top-level discriminated union of all plot types.
@@ -220,18 +271,31 @@ pub struct ScatterPlotConfig {
 pub enum PlotConfig {
     Map(MapPlotConfig),
     Scatter(ScatterPlotConfig),
+    ScrollChart(ScrollChartConfig),
 }
 
 impl PlotConfig {
     pub fn id(&self) -> usize {
-        match self { PlotConfig::Map(c) => c.id, PlotConfig::Scatter(c) => c.id }
+        match self {
+            PlotConfig::Map(c) => c.id,
+            PlotConfig::Scatter(c) => c.id,
+            PlotConfig::ScrollChart(c) => c.id,
+        }
     }
 
     pub fn title(&self) -> &str {
-        match self { PlotConfig::Map(c) => &c.title, PlotConfig::Scatter(c) => &c.title }
+        match self {
+            PlotConfig::Map(c) => &c.title,
+            PlotConfig::Scatter(c) => &c.title,
+            PlotConfig::ScrollChart(c) => &c.title,
+        }
     }
 
     pub fn source_id(&self) -> SourceId {
-        match self { PlotConfig::Map(c) => c.source_id, PlotConfig::Scatter(c) => c.source_id }
+        match self {
+            PlotConfig::Map(c) => c.source_id,
+            PlotConfig::Scatter(c) => c.source_id,
+            PlotConfig::ScrollChart(c) => c.source_id,
+        }
     }
 }

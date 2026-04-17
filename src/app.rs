@@ -1,10 +1,12 @@
 use crate::data::filter::{Filter, FilterOp};
 use crate::data::loader::load_csv_async;
 use crate::data::schema::FieldKind;
+use crate::data::udp_receiver::{start_udp_receiver, UdpStreamConfig};
 use crate::state::app_state::AppState;
 use crate::theme::{AppTheme, ThemePreset};
 use crate::ui::{left_pane::LeftPane, menu_bar::MenuBar, plot_area::PlotArea, right_pane::RightPane};
 use crate::ui::plot_grid::PlotAction;
+use crate::ui::udp_stream_dialog::UdpStreamDialog;
 use eframe::Storage;
 use egui::Context;
 use serde::{Deserialize, Serialize};
@@ -45,6 +47,7 @@ pub struct DataVisualizerApp {
     left_pane: LeftPane,
     plot_area: PlotArea,
     right_pane: RightPane,
+    udp_dialog: UdpStreamDialog,
 
     central_rect: egui::Rect,
 
@@ -77,6 +80,7 @@ impl DataVisualizerApp {
             left_pane: LeftPane::default(),
             plot_area: PlotArea::default(),
             right_pane: RightPane::default(),
+            udp_dialog: UdpStreamDialog::default(),
             central_rect: egui::Rect::from_min_size(
                 egui::pos2(260.0, 28.0),
                 egui::vec2(1100.0, 860.0),
@@ -90,6 +94,20 @@ impl DataVisualizerApp {
     pub fn apply_theme(&mut self, preset: ThemePreset, _ctx: &Context) {
         self.theme = AppTheme::from_preset(preset);
         self.theme.apply_to_style(&mut self.app_style);
+    }
+
+    fn start_udp_stream(&mut self, config: UdpStreamConfig) {
+        let id = self.app_state.next_source_id();
+        let tx = self.app_state.event_tx.clone();
+        match start_udp_receiver(id, config, tx) {
+            Ok(handle) => {
+                self.app_state.streaming_source_ids.push(id);
+                self.app_state.udp_handles.push(handle);
+            }
+            Err(e) => {
+                self.udp_dialog.set_error(e);
+            }
+        }
     }
 
     fn open_csv_dialog(&mut self) {
@@ -145,11 +163,20 @@ impl eframe::App for DataVisualizerApp {
             ctx.request_repaint();
         }
 
-        let (had_events, sync_events) = self.app_state.poll_events();
+        let (had_events, sync_events, had_stream_update) = self.app_state.poll_events();
         for evt in sync_events {
             self.plot_area.apply_sync_event(evt);
         }
+        if had_stream_update {
+            // Re-sync all plots that depend on streaming sources.
+            self.plot_area.sync_all_filters_throttled(&self.app_state);
+        }
         if had_events {
+            ctx.request_repaint();
+        }
+
+        // Keep repainting while any UDP stream is active.
+        if !self.app_state.udp_handles.is_empty() {
             ctx.request_repaint();
         }
 
@@ -205,6 +232,11 @@ impl eframe::App for DataVisualizerApp {
             self.handle_plot_action(action);
         }
 
+        // ── UDP Stream dialog ─────────────────────────────────────────────
+        if let Some(udp_config) = self.udp_dialog.show(ctx, &theme) {
+            self.start_udp_stream(udp_config);
+        }
+
         if let Some(a) = menu_action { self.handle_menu_action(a); }
         if let Some(a) = pane_action { self.handle_pane_action(a); }
 
@@ -231,12 +263,18 @@ impl eframe::App for DataVisualizerApp {
 
 pub enum MenuAction {
     OpenCsv,
+    OpenUdpStream,
     ToggleLegendPane,
 }
 
 pub enum PaneAction {
     OpenCsv,
+    OpenUdpStream,
     RemoveSource(usize),
+    /// Pause/resume a live UDP stream.
+    ToggleStreamPause(usize),
+    /// Stop and disconnect a live UDP stream.
+    StopStream(usize),
     AddPlot(crate::ui::add_plot_dialog::NewPlotConfig),
     RemovePlot(usize),
     AddFilter(crate::data::filter::Filter),
@@ -261,6 +299,7 @@ impl DataVisualizerApp {
     fn handle_menu_action(&mut self, action: MenuAction) {
         match action {
             MenuAction::OpenCsv => self.open_csv_dialog(),
+            MenuAction::OpenUdpStream => self.udp_dialog.open(),
             MenuAction::ToggleLegendPane => self.right_pane_visible = !self.right_pane_visible,
         }
     }
@@ -270,12 +309,30 @@ impl DataVisualizerApp {
         use crate::ui::add_plot_dialog::NewPlotConfig;
         match action {
             PaneAction::OpenCsv => self.open_csv_dialog(),
+            PaneAction::OpenUdpStream => self.udp_dialog.open(),
+
+            PaneAction::ToggleStreamPause(id) => {
+                if let Some(h) = self.app_state.udp_handles.iter().find(|h| h.source_id == id) {
+                    h.toggle_pause();
+                }
+            }
+            PaneAction::StopStream(id) => {
+                self.app_state.stop_stream(id);
+                // Also remove plots and source.
+                self.plot_area.remove_plots_for_source(id);
+                self.app_state.plots.retain(|p| p.source_id() != id);
+                self.app_state.remove_source(id);
+            }
 
             PaneAction::RemoveSource(id) => {
                 // Stop playback if this source is being played.
                 if self.app_state.playback.source_id == Some(id) {
                     self.app_state.playback.stop();
                     self.remove_playback_filter();
+                }
+                // Stop streaming if this source is a UDP stream.
+                if self.app_state.is_streaming(id) {
+                    self.app_state.stop_stream(id);
                 }
                 self.plot_area.remove_plots_for_source(id);
                 self.app_state.plots.retain(|p| p.source_id() != id);
@@ -293,6 +350,11 @@ impl DataVisualizerApp {
                         config.id = self.app_state.alloc_plot_id();
                         self.app_state.plots.push(PlotConfig::Scatter(config.clone()));
                         self.plot_area.add_scatter_plot(config, &self.app_state, self.central_rect);
+                    }
+                    NewPlotConfig::ScrollChart(mut config) => {
+                        config.id = self.app_state.alloc_plot_id();
+                        self.app_state.plots.push(PlotConfig::ScrollChart(config.clone()));
+                        self.plot_area.add_scroll_chart(config, &self.app_state, self.central_rect);
                     }
                 }
             }

@@ -60,10 +60,21 @@ pub struct MapSyncResult {
     pub legend: PlotLegendData,
 }
 
+/// The precomputed data produced by a background sync for a scroll chart.
+pub struct ScrollChartSyncResult {
+    pub plot_id: usize,
+    pub schema: DataSchema,
+    /// Time values for each row.
+    pub times: Vec<f64>,
+    /// One series per Y column: (col_name, values).
+    pub series: Vec<(String, Vec<f64>)>,
+}
+
 /// Wrapper that goes through the event channel.
 pub enum PlotSyncEvent {
     ScatterReady(ScatterSyncResult),
     MapReady(MapSyncResult),
+    ScrollChartReady(ScrollChartSyncResult),
     /// The background computation was cancelled (no data to apply).
     Cancelled { plot_id: usize },
 }

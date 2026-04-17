@@ -3,6 +3,7 @@ pub mod gpu_points;
 pub mod map_plot;
 pub mod plot_config;
 pub mod scatter_plot;
+pub mod scroll_chart;
 pub mod spatial_grid;
 pub mod styling;
 pub mod sync;

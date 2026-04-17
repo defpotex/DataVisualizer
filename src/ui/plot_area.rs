@@ -1,4 +1,4 @@
-use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig};
+use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig, ScrollChartConfig};
 use crate::plot::styling::PlotLegendData;
 use crate::plot::sync::PlotSyncEvent;
 use crate::state::app_state::AppState;
@@ -19,6 +19,10 @@ impl PlotArea {
 
     pub fn add_scatter_plot(&mut self, config: ScatterPlotConfig, state: &AppState, central_rect: egui::Rect) {
         self.plot_manager.add_scatter_plot(config, state, central_rect);
+    }
+
+    pub fn add_scroll_chart(&mut self, config: ScrollChartConfig, state: &AppState, central_rect: egui::Rect) {
+        self.plot_manager.add_scroll_chart(config, state, central_rect);
     }
 
     pub fn remove_plot(&mut self, id: usize) {

@@ -1,8 +1,9 @@
 use crate::data::filter::{apply_filters_for_source, Filter};
 use crate::data::source::{DataSource, SourceId};
 use crate::plot::map_plot::{snap_to_grid, MapPlot};
-use crate::plot::plot_config::{MapPlotConfig, PlotConfig, ScatterPlotConfig};
+use crate::plot::plot_config::{MapPlotConfig, PlotConfig, ScatterPlotConfig, ScrollChartConfig};
 use crate::plot::scatter_plot::{PlotWindowEvent, ScatterPlot};
+use crate::plot::scroll_chart::ScrollChart;
 use crate::plot::styling::PlotLegendData;
 use crate::plot::sync::PlotSyncEvent;
 use crate::state::app_state::{AppState, DataEvent};
@@ -32,37 +33,57 @@ pub enum PlotAction {
 enum ManagedPlot {
     Map(MapPlot),
     Scatter(ScatterPlot),
+    ScrollChart(ScrollChart),
 }
 
 impl ManagedPlot {
     fn plot_id(&self) -> usize {
-        match self { Self::Map(p) => p.plot_id(), Self::Scatter(p) => p.plot_id() }
+        match self {
+            Self::Map(p) => p.plot_id(),
+            Self::Scatter(p) => p.plot_id(),
+            Self::ScrollChart(p) => p.plot_id(),
+        }
     }
     fn source_id(&self) -> SourceId {
         match self {
             Self::Map(p) => p.config.source_id,
             Self::Scatter(p) => p.config.source_id,
+            Self::ScrollChart(p) => p.config.source_id,
         }
     }
     fn window_id(&self) -> egui::Id {
-        match self { Self::Map(p) => p.window_id(), Self::Scatter(p) => p.window_id() }
+        match self {
+            Self::Map(p) => p.window_id(),
+            Self::Scatter(p) => p.window_id(),
+            Self::ScrollChart(p) => p.window_id(),
+        }
     }
     fn intended_rect(&self, ctx: &Context) -> Option<Rect> {
-        match self { Self::Map(p) => p.intended_rect(ctx), Self::Scatter(p) => p.intended_rect(ctx) }
+        match self {
+            Self::Map(p) => p.intended_rect(ctx),
+            Self::Scatter(p) => p.intended_rect(ctx),
+            Self::ScrollChart(p) => p.intended_rect(ctx),
+        }
     }
     fn set_pending_snap(&mut self, pos: egui::Pos2) {
-        match self { Self::Map(p) => p.set_pending_snap(pos), Self::Scatter(p) => p.set_pending_snap(pos) }
+        match self {
+            Self::Map(p) => p.set_pending_snap(pos),
+            Self::Scatter(p) => p.set_pending_snap(pos),
+            Self::ScrollChart(p) => p.set_pending_snap(pos),
+        }
     }
     fn show(&mut self, ctx: &Context, theme: &AppTheme, central_rect: Rect, grid_size: f32, perf: &crate::state::perf_settings::PerformanceSettings, selection: Option<&SelectionSet>) -> PlotWindowEvent {
         match self {
             Self::Map(p) => p.show_as_window(ctx, theme, central_rect, grid_size, perf, selection),
             Self::Scatter(p) => p.show_as_window(ctx, theme, central_rect, grid_size, perf, selection),
+            Self::ScrollChart(p) => p.show_as_window(ctx, theme, central_rect, grid_size),
         }
     }
     fn is_computing(&self) -> bool {
         match self {
             Self::Map(p) => p.is_computing(),
             Self::Scatter(p) => p.is_computing(),
+            Self::ScrollChart(p) => p.is_computing(),
         }
     }
     fn sync_data_async(&mut self, source: &DataSource, filters: &[Filter], tx: &Sender<DataEvent>) {
@@ -72,12 +93,14 @@ impl ManagedPlot {
         match self {
             Self::Map(p) => p.sync_data_async(&tmp, tx),
             Self::Scatter(p) => p.sync_data_async(&tmp, tx),
+            Self::ScrollChart(p) => p.sync_data_async(&tmp, tx),
         }
     }
     fn legend_data(&self) -> Option<&PlotLegendData> {
         match self {
             Self::Map(p) => p.legend_data(),
             Self::Scatter(p) => p.legend_data(),
+            Self::ScrollChart(_) => None, // Scroll charts don't have color legends
         }
     }
 
@@ -85,6 +108,7 @@ impl ManagedPlot {
         match (self, new_config) {
             (Self::Map(p), PlotConfig::Map(c)) => p.apply_config(c),
             (Self::Scatter(p), PlotConfig::Scatter(c)) => p.apply_config(c),
+            (Self::ScrollChart(p), PlotConfig::ScrollChart(c)) => p.apply_config(c),
             _ => {} // type mismatch — shouldn't happen
         }
     }
@@ -121,6 +145,18 @@ impl PlotManager {
             plot.sync_data_async(&tmp, &state.event_tx);
         }
         self.plots.push(ManagedPlot::Scatter(plot));
+    }
+
+    pub fn add_scroll_chart(&mut self, config: ScrollChartConfig, state: &AppState, central_rect: Rect) {
+        let default_pos = tile_default_pos(self.plots.len(), central_rect);
+        let mut chart = ScrollChart::new(config, default_pos);
+        if let Some(source) = state.sources.iter().find(|s| s.id == chart.config.source_id) {
+            let filtered = apply_filters_for_source(&source.df, &state.filters, Some(source.id));
+            let mut tmp = source.clone();
+            tmp.df = filtered;
+            chart.sync_data_async(&tmp, &state.event_tx);
+        }
+        self.plots.push(ManagedPlot::ScrollChart(chart));
     }
 
     /// Re-apply filters to all plots (call whenever filters change).
@@ -176,12 +212,19 @@ impl PlotManager {
                     p.apply_sync_result(result);
                 }
             }
+            PlotSyncEvent::ScrollChartReady(result) => {
+                let id = result.plot_id;
+                if let Some(ManagedPlot::ScrollChart(p)) = self.plots.iter_mut().find(|p| p.plot_id() == id) {
+                    p.apply_sync_result(result);
+                }
+            }
             PlotSyncEvent::Cancelled { plot_id } => {
                 // Mark the plot as no longer computing (cancel already handled).
                 if let Some(plot) = self.plots.iter_mut().find(|p| p.plot_id() == plot_id) {
                     match plot {
                         ManagedPlot::Map(p) => { p.cancel_sync(); }
                         ManagedPlot::Scatter(p) => { p.cancel_sync(); }
+                        ManagedPlot::ScrollChart(p) => { p.cancel_sync(); }
                     }
                 }
             }

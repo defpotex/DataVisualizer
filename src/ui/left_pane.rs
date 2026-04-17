@@ -68,7 +68,12 @@ impl LeftPane {
                     } else {
                         for source in &state.sources {
                             ui.add_space(4.0);
-                            source_card(ui, theme, source, &mut self.fields_expanded, &mut action);
+                            let is_streaming = state.is_streaming(source.id);
+                            let is_paused = state.udp_handles.iter()
+                                .find(|h| h.source_id == source.id)
+                                .map(|h| h.is_paused())
+                                .unwrap_or(false);
+                            source_card(ui, theme, source, &mut self.fields_expanded, &mut action, is_streaming, is_paused);
                         }
                     }
                     for note in &state.notifications {
@@ -233,18 +238,27 @@ fn source_card(
     source: &crate::data::source::DataSource,
     expanded: &mut std::collections::HashSet<usize>,
     action: &mut Option<PaneAction>,
+    is_streaming: bool,
+    is_paused: bool,
 ) {
     let c = &theme.colors;
     let s = &theme.spacing;
     egui::Frame::default()
         .fill(c.bg_app)
-        .stroke(egui::Stroke::new(1.0, c.border))
+        .stroke(egui::Stroke::new(1.0, if is_streaming { c.accent_primary } else { c.border }))
         .corner_radius(s.rounding)
         .inner_margin(egui::Margin::from(8.0_f32))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("●").color(c.accent_secondary).size(s.font_small));
+                let icon = if is_streaming { "◉" } else { "●" };
+                let icon_color = if is_streaming && !is_paused { c.accent_primary } else { c.accent_secondary };
+                ui.label(RichText::new(icon).color(icon_color).size(s.font_small));
                 ui.label(RichText::new(&source.label).color(c.text_primary).size(s.font_body).strong());
+                if is_streaming {
+                    let status = if is_paused { "PAUSED" } else { "LIVE" };
+                    let status_color = if is_paused { c.accent_warning } else { c.accent_primary };
+                    ui.label(RichText::new(status).color(status_color).size(s.font_small).strong());
+                }
             });
             ui.label(
                 RichText::new(format!("{} rows · {} fields", format_count(source.row_count()), source.field_count()))
@@ -273,10 +287,28 @@ fn source_card(
                 ui.add_space(2.0);
             }
             ui.add_space(4.0);
-            if ui.add(egui::Button::new(
-                RichText::new("Remove").color(c.accent_warning).size(s.font_small),
-            ).min_size(egui::vec2(ui.available_width(), 0.0))).clicked() {
-                *action = Some(PaneAction::RemoveSource(source.id));
+
+            if is_streaming {
+                // Streaming controls: Pause/Resume + Stop
+                ui.horizontal(|ui| {
+                    let pause_label = if is_paused { "▶ Resume" } else { "⏸ Pause" };
+                    if ui.add(egui::Button::new(
+                        RichText::new(pause_label).color(c.accent_primary).size(s.font_small),
+                    ).min_size(egui::vec2(ui.available_width() / 2.0 - 4.0, 0.0))).clicked() {
+                        *action = Some(PaneAction::ToggleStreamPause(source.id));
+                    }
+                    if ui.add(egui::Button::new(
+                        RichText::new("■ Stop").color(c.accent_warning).size(s.font_small),
+                    ).min_size(egui::vec2(ui.available_width(), 0.0))).clicked() {
+                        *action = Some(PaneAction::StopStream(source.id));
+                    }
+                });
+            } else {
+                if ui.add(egui::Button::new(
+                    RichText::new("Remove").color(c.accent_warning).size(s.font_small),
+                ).min_size(egui::vec2(ui.available_width(), 0.0))).clicked() {
+                    *action = Some(PaneAction::RemoveSource(source.id));
+                }
             }
         });
 }
@@ -289,8 +321,9 @@ fn plot_card(ui: &mut Ui, theme: &AppTheme, config: &PlotConfig, source_label: &
     let mut remove_id = None;
 
     let (icon, type_label, icon_color) = match config {
-        PlotConfig::Map(_)     => ("◈", "Map",     c.accent_primary),
-        PlotConfig::Scatter(_) => ("◉", "Scatter", c.accent_secondary),
+        PlotConfig::Map(_)         => ("◈", "Map",          c.accent_primary),
+        PlotConfig::Scatter(_)     => ("◉", "Scatter",      c.accent_secondary),
+        PlotConfig::ScrollChart(_) => ("⏱", "Scroll Chart", c.accent_secondary),
     };
 
     egui::Frame::default()

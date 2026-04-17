@@ -1,13 +1,13 @@
 use crate::data::schema::{FieldKind, FieldMeta};
-use crate::plot::plot_config::{AxisScale, MapPlotConfig, ScatterPlotConfig, TileScheme};
+use crate::plot::plot_config::{AxisScale, MapPlotConfig, ScatterPlotConfig, ScrollChartConfig, TileScheme};
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use egui::{RichText, Ui, Window};
 
 #[derive(Debug, Clone, PartialEq)]
-enum PlotType { Map, Scatter }
+enum PlotType { Map, Scatter, ScrollChart }
 
-/// Modal dialog for creating a new plot (Map or Scatter).
+/// Modal dialog for creating a new plot (Map, Scatter, or Scroll Chart).
 pub struct AddPlotDialog {
     pub is_open: bool,
     plot_type: PlotType,
@@ -20,6 +20,10 @@ pub struct AddPlotDialog {
     // Scatter-specific (all fields)
     x_col_idx: usize,
     y_col_idx: usize,
+    // Scroll chart-specific
+    scroll_time_col_idx: usize,
+    scroll_y_selected: Vec<bool>,
+    scroll_window_secs: f64,
 }
 
 impl Default for AddPlotDialog {
@@ -34,6 +38,9 @@ impl Default for AddPlotDialog {
             tile_scheme: TileScheme::CartoDark,
             x_col_idx: 0,
             y_col_idx: 0,
+            scroll_time_col_idx: 0,
+            scroll_y_selected: Vec::new(),
+            scroll_window_secs: 60.0,
         }
     }
 }
@@ -42,6 +49,7 @@ impl Default for AddPlotDialog {
 pub enum NewPlotConfig {
     Map(MapPlotConfig),
     Scatter(ScatterPlotConfig),
+    ScrollChart(ScrollChartConfig),
 }
 
 impl AddPlotDialog {
@@ -55,6 +63,9 @@ impl AddPlotDialog {
         self.tile_scheme = TileScheme::CartoDark;
         self.title = String::from("Map Plot");
         self.plot_type = PlotType::Map;
+        self.scroll_time_col_idx = 0;
+        self.scroll_y_selected = Vec::new();
+        self.scroll_window_secs = 60.0;
     }
 
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState) -> Option<NewPlotConfig> {
@@ -95,6 +106,11 @@ impl AddPlotDialog {
                 if type_btn(ui, "◉  Scatter", self.plot_type == PlotType::Scatter, theme).clicked() {
                     self.plot_type = PlotType::Scatter;
                     self.title = "Scatter Plot".to_string();
+                }
+                ui.add_space(6.0);
+                if type_btn(ui, "⏱  Scroll", self.plot_type == PlotType::ScrollChart, theme).clicked() {
+                    self.plot_type = PlotType::ScrollChart;
+                    self.title = "Scroll Chart".to_string();
                 }
             });
 
@@ -229,6 +245,90 @@ impl AddPlotDialog {
                             close = true;
                         }
                     }
+
+                    PlotType::ScrollChart => {
+                        // Scroll chart: only numeric fields.
+                        let numeric: Vec<&str> = source.schema.fields.iter()
+                            .filter(|f| is_numeric_or_geo(&f.kind))
+                            .map(|f| f.name.as_str())
+                            .collect();
+
+                        if self.scroll_time_col_idx >= numeric.len() { self.scroll_time_col_idx = 0; }
+
+                        // Auto-select timestamp column by heuristic.
+                        let time_default = source.schema.fields.iter()
+                            .filter(|f| is_numeric_or_geo(&f.kind))
+                            .position(|f| f.kind == FieldKind::Timestamp)
+                            .unwrap_or(0);
+                        if self.scroll_time_col_idx == 0 && time_default != 0 {
+                            self.scroll_time_col_idx = time_default;
+                        }
+
+                        // Ensure y_selected matches numeric field count.
+                        if self.scroll_y_selected.len() != numeric.len() {
+                            self.scroll_y_selected = vec![false; numeric.len()];
+                        }
+
+                        name_col_picker(ui, "Time Column", &numeric, &mut self.scroll_time_col_idx, "add_plot_scroll_time", theme);
+                        ui.add_space(8.0);
+
+                        ui.label(RichText::new("Y Columns").color(c.text_secondary).size(s.font_small));
+                        ui.add_space(2.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(100.0)
+                            .show(ui, |ui| {
+                                for (i, name) in numeric.iter().enumerate() {
+                                    if i < self.scroll_y_selected.len() {
+                                        ui.checkbox(
+                                            &mut self.scroll_y_selected[i],
+                                            RichText::new(*name).size(s.font_small).monospace(),
+                                        );
+                                    }
+                                }
+                            });
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Window").color(c.text_secondary).size(s.font_small));
+                            ui.add(
+                                egui::DragValue::new(&mut self.scroll_window_secs)
+                                    .range(1.0..=100_000.0)
+                                    .speed(1.0)
+                                    .suffix(" s"),
+                            );
+                        });
+                        ui.add_space(10.0);
+
+                        // Title.
+                        title_field(ui, &mut self.title, theme);
+
+                        ui.add_space(16.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        let y_cols: Vec<String> = numeric.iter()
+                            .enumerate()
+                            .filter(|(i, _)| self.scroll_y_selected.get(*i).copied().unwrap_or(false))
+                            .map(|(_, name)| name.to_string())
+                            .collect();
+                        let can_create = !numeric.is_empty() && !y_cols.is_empty();
+
+                        if create_btn(ui, can_create, theme).clicked() {
+                            let time_col = numeric.get(self.scroll_time_col_idx)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            result = Some(NewPlotConfig::ScrollChart(ScrollChartConfig {
+                                id: 0,
+                                title: self.title.clone(),
+                                source_id: source.id,
+                                time_col,
+                                y_cols,
+                                window_secs: self.scroll_window_secs,
+                                thresholds: Vec::new(),
+                            }));
+                            close = true;
+                        }
+                    }
                 }
 
                 ui.add_space(4.0);
@@ -335,7 +435,7 @@ fn create_btn(ui: &mut Ui, enabled: bool, theme: &AppTheme) -> egui::Response {
 fn is_numeric_or_geo(kind: &FieldKind) -> bool {
     matches!(
         kind,
-        FieldKind::Latitude | FieldKind::Longitude | FieldKind::Altitude
+        FieldKind::Timestamp | FieldKind::Latitude | FieldKind::Longitude | FieldKind::Altitude
         | FieldKind::Speed | FieldKind::Heading | FieldKind::Float | FieldKind::Integer
     )
 }

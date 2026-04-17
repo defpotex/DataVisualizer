@@ -5,3 +5,4 @@ pub mod menu_bar;
 pub mod plot_area;
 pub mod plot_grid;
 pub mod right_pane;
+pub mod udp_stream_dialog;
