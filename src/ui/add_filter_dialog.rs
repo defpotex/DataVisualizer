@@ -81,6 +81,12 @@ impl AddFilterDialog {
         let current_op = &ops[self.selected_op_idx.min(ops.len() - 1)];
         let is_set_mode = current_op.is_set_op();
 
+        let screen = ui.ctx().screen_rect();
+        let default_pos = egui::pos2(
+            (screen.center().x - 170.0).max(screen.min.x),
+            (screen.center().y - 150.0).max(screen.min.y),
+        );
+
         Window::new(
             RichText::new("Add Filter")
                 .color(c.text_primary)
@@ -90,7 +96,8 @@ impl AddFilterDialog {
         .collapsible(false)
         .resizable(false)
         .min_width(340.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_pos(default_pos)
+        .order(egui::Order::Foreground)
         .frame(egui::Frame {
             fill: c.bg_panel,
             stroke: egui::Stroke::new(1.0, c.border),

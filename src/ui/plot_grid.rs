@@ -26,6 +26,10 @@ pub enum PlotAction {
     SelectionChanged(Option<SelectionSet>),
     /// User chose "Filter to Selection" from the context menu.
     FilterToSelection(SelectionSet),
+    /// Legend-style action from point context menu (filter to value, select all sharing).
+    LegendAction(crate::ui::right_pane::LegendAction),
+    /// Rebind a plot to a different source (from the plot's "source removed" overlay).
+    RebindSource { plot_id: usize, new_source_id: crate::data::source::SourceId },
 }
 
 // ── ManagedPlot ───────────────────────────────────────────────────────────────
@@ -87,7 +91,21 @@ impl ManagedPlot {
         }
     }
     fn sync_data_async(&mut self, source: &DataSource, filters: &[Filter], tx: &Sender<DataEvent>) {
-        let filtered_df = apply_filters_for_source(&source.df, filters, Some(source.id));
+        // Scroll charts manage their own time windowing, so skip temporal
+        // playback filters (TimeLe, TimeRange) to avoid truncating the
+        // scroll window when playback trail is shorter.
+        let effective_filters: Vec<Filter>;
+        let filter_ref = match self {
+            Self::ScrollChart(_) => {
+                effective_filters = filters.iter()
+                    .filter(|f| !matches!(f.op, crate::data::filter::FilterOp::TimeLe | crate::data::filter::FilterOp::TimeRange))
+                    .cloned()
+                    .collect();
+                effective_filters.as_slice()
+            }
+            _ => filters,
+        };
+        let filtered_df = apply_filters_for_source(&source.df, filter_ref, Some(source.id));
         let mut tmp = source.clone();
         tmp.df = filtered_df;
         match self {
@@ -231,6 +249,17 @@ impl PlotManager {
         }
     }
 
+    /// Update a plot's source_id in the live plot manager.
+    pub fn rebind_plot_source(&mut self, plot_id: usize, new_source_id: SourceId) {
+        if let Some(plot) = self.plots.iter_mut().find(|p| p.plot_id() == plot_id) {
+            match plot {
+                ManagedPlot::Map(p) => p.config.source_id = new_source_id,
+                ManagedPlot::Scatter(p) => p.config.source_id = new_source_id,
+                ManagedPlot::ScrollChart(p) => p.config.source_id = new_source_id,
+            }
+        }
+    }
+
     pub fn remove_plot(&mut self, id: usize) {
         self.plots.retain(|p| p.plot_id() != id);
         self.prev_rects.remove(&id);
@@ -262,11 +291,32 @@ impl PlotManager {
         grid_size: f32,
         perf: &crate::state::perf_settings::PerformanceSettings,
         selection: Option<&SelectionSet>,
+        available_sources: &[(SourceId, String)],
     ) -> Vec<PlotAction> {
         let mut actions: Vec<PlotAction> = Vec::new();
         let mut closed_ids: Vec<usize> = Vec::new();
 
         for plot in &mut self.plots {
+            // Check if source still exists
+            let source_exists = available_sources.iter().any(|(id, _)| *id == plot.source_id());
+            if !source_exists {
+                // Show detached overlay with rebind options.
+                // Use the previous rect (captured before the source was removed)
+                // so the window doesn't shrink or grow when it switches to the overlay.
+                let prev_rect = self.prev_rects.get(&plot.plot_id()).copied();
+                let evt = show_detached_overlay(ctx, theme, plot, central_rect, grid_size, available_sources, prev_rect);
+                match evt {
+                    PlotWindowEvent::Closed => {
+                        closed_ids.push(plot.plot_id());
+                    }
+                    PlotWindowEvent::RebindSource { plot_id, new_source_id } => {
+                        actions.push(PlotAction::RebindSource { plot_id, new_source_id });
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             match plot.show(ctx, theme, central_rect, grid_size, perf, selection) {
                 PlotWindowEvent::Open => {}
                 PlotWindowEvent::Closed => {
@@ -283,6 +333,12 @@ impl PlotManager {
                 }
                 PlotWindowEvent::FilterToSelection(sel) => {
                     actions.push(PlotAction::FilterToSelection(sel));
+                }
+                PlotWindowEvent::LegendAction(la) => {
+                    actions.push(PlotAction::LegendAction(la));
+                }
+                PlotWindowEvent::RebindSource { plot_id, new_source_id } => {
+                    actions.push(PlotAction::RebindSource { plot_id, new_source_id });
                 }
             }
         }
@@ -365,6 +421,106 @@ impl PlotManager {
 
         for &(id, rect) in &current { self.prev_rects.insert(id, rect); }
     }
+}
+
+/// Show a detached plot window (source removed) with rebind options.
+fn show_detached_overlay(
+    ctx: &Context,
+    theme: &AppTheme,
+    plot: &mut ManagedPlot,
+    _central_rect: Rect,
+    _grid_size: f32,
+    available_sources: &[(SourceId, String)],
+    prev_rect: Option<Rect>,
+) -> PlotWindowEvent {
+    use crate::plot::scatter_plot::PlotWindowEvent;
+    let c = &theme.colors;
+    let s = &theme.spacing;
+    let mut event = PlotWindowEvent::Open;
+    let mut open = true;
+
+    let title = match plot {
+        ManagedPlot::Map(p) => p.config.title.clone(),
+        ManagedPlot::Scatter(p) => p.config.title.clone(),
+        ManagedPlot::ScrollChart(p) => p.config.title.clone(),
+    };
+    let plot_id = plot.plot_id();
+    let win_id = plot.window_id();
+
+    // Pin the window to the rect it had before the source was removed so it
+    // doesn't shrink to content or grow unboundedly. `prev_rect` comes from
+    // PlotManager.prev_rects which was snapshotted prior to detachment.
+    let pin_size = prev_rect.map(|r| r.size());
+    let pin_pos = prev_rect.map(|r| r.min);
+
+    let mut win = egui::Window::new(&title)
+        .id(win_id)
+        .open(&mut open)
+        .resizable(false)
+        .collapsible(false)
+        .frame(egui::Frame {
+            fill: c.bg_panel,
+            stroke: egui::Stroke::new(2.0, c.accent_warning),
+            corner_radius: egui::CornerRadius::same(s.rounding as u8),
+            inner_margin: egui::Margin::from(16.0_f32),
+            ..Default::default()
+        });
+    if let Some(size) = pin_size {
+        win = win.fixed_size(size);
+    }
+    if let Some(pos) = pin_pos {
+        win = win.current_pos(pos);
+    }
+    win.show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    egui::RichText::new("Source Removed")
+                        .color(c.accent_warning)
+                        .size(s.font_body + 2.0)
+                        .strong(),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("The data source for this plot has been removed.\nSelect a new source to rebind:")
+                        .color(c.text_secondary)
+                        .size(s.font_small),
+                );
+                ui.add_space(12.0);
+
+                if available_sources.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No sources available. Load a data source first.")
+                            .color(c.text_secondary)
+                            .size(s.font_small)
+                            .italics(),
+                    );
+                } else {
+                    for (source_id, label) in available_sources {
+                        let btn = egui::Button::new(
+                            egui::RichText::new(format!("▶  {}", label))
+                                .color(c.accent_primary)
+                                .size(s.font_body),
+                        )
+                        .min_size(egui::vec2(ui.available_width() * 0.8, 0.0));
+                        if ui.add(btn).clicked() {
+                            event = PlotWindowEvent::RebindSource {
+                                plot_id,
+                                new_source_id: *source_id,
+                            };
+                        }
+                        ui.add_space(4.0);
+                    }
+                }
+                ui.add_space(20.0);
+            });
+        });
+
+    if !open {
+        return PlotWindowEvent::Closed;
+    }
+
+    event
 }
 
 // ── Grid positioning ──────────────────────────────────────────────────────────

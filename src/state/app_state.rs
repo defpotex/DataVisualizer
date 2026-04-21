@@ -118,9 +118,11 @@ impl AppState {
                 DataEvent::LoadError { id, message } => {
                     self.notifications.push(format!("Source {}: {}", id, message));
                 }
-                DataEvent::StreamUpdate(source) => {
+                DataEvent::StreamUpdate(mut source) => {
                     // Replace the existing source with same ID, or insert if new.
+                    // Preserve user-set column aliases across stream updates.
                     if let Some(existing) = self.sources.iter_mut().find(|s| s.id == source.id) {
+                        source.column_aliases = existing.column_aliases.clone();
                         *existing = source;
                     } else {
                         self.sources.push(source);

@@ -40,11 +40,18 @@ impl UdpStreamDialog {
         let s = &theme.spacing;
         let mut result: Option<UdpStreamConfig> = None;
 
+        let screen = ctx.screen_rect();
+        let default_pos = egui::pos2(
+            (screen.center().x - 160.0).max(screen.min.x),
+            (screen.center().y - 120.0).max(screen.min.y),
+        );
+
         egui::Window::new("Connect UDP Stream")
             .collapsible(false)
             .resizable(false)
             .default_width(320.0)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_pos(default_pos)
+            .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.set_min_width(300.0);
 

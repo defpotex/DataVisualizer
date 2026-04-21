@@ -182,6 +182,12 @@ impl MapConfigDialog {
         if self.draft_size_col_idx >= all_fields.len() { self.draft_size_col_idx = 0; }
         if self.draft_alpha_col_idx >= all_fields.len() { self.draft_alpha_col_idx = 0; }
 
+        let screen = ctx.screen_rect();
+        let default_pos = egui::pos2(
+            (screen.center().x - 200.0).max(screen.min.x),
+            (screen.center().y - 250.0).max(screen.min.y),
+        );
+
         egui::Window::new(
             RichText::new("Configure Map Plot")
                 .color(c.text_primary)
@@ -192,7 +198,8 @@ impl MapConfigDialog {
         .collapsible(false)
         .resizable(true)
         .min_width(360.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_pos(default_pos)
+        .order(egui::Order::Foreground)
         .frame(egui::Frame {
             fill: c.bg_panel,
             stroke: egui::Stroke::new(1.0, c.border),
@@ -386,78 +393,99 @@ impl MapConfigDialog {
                             });
                     });
 
-                ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(8.0);
+            }); // end ScrollArea
 
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            {
                 let can_apply = !numeric.is_empty() && !self.draft_title.trim().is_empty();
+
+                let build_config = |s: &MapConfigDialog| -> MapPlotConfig {
+                    let lat = numeric.get(s.draft_lat_idx).cloned().unwrap_or_default();
+                    let lon = numeric.get(s.draft_lon_idx).cloned().unwrap_or_default();
+
+                    let color_mode = match s.draft_color_variant {
+                        1 => ColorMode::Categorical {
+                            col: all_fields.get(s.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                        },
+                        2 => ColorMode::Continuous {
+                            col: all_fields.get(s.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                            colormap: s.draft_colormap.clone(),
+                            color_min: if s.draft_color_min_enabled { Some(s.draft_color_min) } else { None },
+                            color_max: if s.draft_color_max_enabled { Some(s.draft_color_max) } else { None },
+                            reverse: s.draft_color_reverse,
+                        },
+                        _ => ColorMode::Solid,
+                    };
+
+                    let size_config = if s.draft_size_enabled {
+                        Some(SizeConfig {
+                            col: all_fields.get(s.draft_size_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                            min_px: s.draft_size_min_px,
+                            max_px: s.draft_size_max_px,
+                        })
+                    } else { None };
+
+                    let alpha_config = if s.draft_alpha_enabled {
+                        Some(AlphaConfig {
+                            col: all_fields.get(s.draft_alpha_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                            min_alpha: s.draft_alpha_min,
+                            max_alpha: s.draft_alpha_max,
+                        })
+                    } else { None };
+
+                    let mut hover_fields: Vec<String> = s.draft_hover_fields.iter().cloned().collect();
+                    hover_fields.sort_unstable();
+
+                    MapPlotConfig {
+                        id: config.id,
+                        title: s.draft_title.trim().to_string(),
+                        source_id: config.source_id,
+                        lat_col: lat,
+                        lon_col: lon,
+                        tile_scheme: s.draft_tile_scheme.clone(),
+                        color_mode,
+                        size_config,
+                        alpha_config,
+                        hover_fields,
+                    }
+                };
+
                 ui.horizontal(|ui| {
-                    let apply_btn = egui::Button::new(
-                        RichText::new("Apply")
+                    let ok_btn = egui::Button::new(
+                        RichText::new("OK")
                             .color(if can_apply { c.bg_app } else { c.text_secondary })
                             .size(s.font_body)
                             .strong(),
                     )
                     .fill(if can_apply { c.accent_primary } else { c.widget_bg })
-                    .min_size(egui::vec2(90.0, 0.0));
-
-                    if ui.add_enabled(can_apply, apply_btn).clicked() {
-                        let lat = numeric.get(self.draft_lat_idx).cloned().unwrap_or_default();
-                        let lon = numeric.get(self.draft_lon_idx).cloned().unwrap_or_default();
-
-                        let color_mode = match self.draft_color_variant {
-                            1 => ColorMode::Categorical {
-                                col: all_fields.get(self.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                            },
-                            2 => ColorMode::Continuous {
-                                col: all_fields.get(self.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                                colormap: self.draft_colormap.clone(),
-                                color_min: if self.draft_color_min_enabled { Some(self.draft_color_min) } else { None },
-                                color_max: if self.draft_color_max_enabled { Some(self.draft_color_max) } else { None },
-                                reverse: self.draft_color_reverse,
-                            },
-                            _ => ColorMode::Solid,
-                        };
-
-                        let size_config = if self.draft_size_enabled {
-                            Some(SizeConfig {
-                                col: all_fields.get(self.draft_size_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                                min_px: self.draft_size_min_px,
-                                max_px: self.draft_size_max_px,
-                            })
-                        } else { None };
-
-                        let alpha_config = if self.draft_alpha_enabled {
-                            Some(AlphaConfig {
-                                col: all_fields.get(self.draft_alpha_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                                min_alpha: self.draft_alpha_min,
-                                max_alpha: self.draft_alpha_max,
-                            })
-                        } else { None };
-
-                        let mut hover_fields: Vec<String> = self.draft_hover_fields.iter().cloned().collect();
-                        hover_fields.sort_unstable();
-
-                        result = Some(MapPlotConfig {
-                            id: config.id,
-                            title: self.draft_title.trim().to_string(),
-                            source_id: config.source_id,
-                            lat_col: lat,
-                            lon_col: lon,
-                            tile_scheme: self.draft_tile_scheme.clone(),
-                            color_mode,
-                            size_config,
-                            alpha_config,
-                            hover_fields,
-                        });
+                    .min_size(egui::vec2(70.0, 0.0));
+                    if ui.add_enabled(can_apply, ok_btn).clicked() {
+                        result = Some(build_config(self));
                         close = true;
                     }
-                    ui.add_space(8.0);
+
+                    ui.add_space(4.0);
+
+                    let apply_btn = egui::Button::new(
+                        RichText::new("Apply")
+                            .color(if can_apply { c.text_primary } else { c.text_secondary })
+                            .size(s.font_body),
+                    )
+                    .min_size(egui::vec2(70.0, 0.0));
+                    if ui.add_enabled(can_apply, apply_btn).clicked() {
+                        result = Some(build_config(self));
+                    }
+
+                    ui.add_space(4.0);
+
                     if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
                         close = true;
                     }
                 });
-            });
+            }
         });
 
         if close { self.is_open = false; }
@@ -493,6 +521,11 @@ pub struct MapPlot {
 
     configure_dialog: MapConfigDialog,
 
+    /// For categorical mode: ordered (category_name, full-alpha color) from the legend.
+    category_entries: Arc<Vec<(String, Color32)>>,
+    /// Per-point category index into `category_entries` (empty for non-categorical modes).
+    category_indices: Arc<Vec<Option<usize>>>,
+
     /// Context menu state (right-click).
     context_menu_row: Option<usize>,
     context_menu_pos: Option<Pos2>,
@@ -503,6 +536,8 @@ pub struct MapPlot {
     has_loaded: bool,
     /// Token to cancel a running background sync.
     cancel_token: CancelToken,
+    /// Persistent category→palette-index mapping so colors don't shift across updates.
+    stable_category_map: std::collections::HashMap<String, usize>,
 }
 
 impl MapPlot {
@@ -521,12 +556,15 @@ impl MapPlot {
             row_indices: Arc::new(Vec::new()),
             cached_schema: None,
             legend: None,
+            category_entries: Arc::new(Vec::new()),
+            category_indices: Arc::new(Vec::new()),
             configure_dialog: MapConfigDialog::default(),
             context_menu_row: None,
             context_menu_pos: None,
             computing: false,
             has_loaded: false,
             cancel_token: CancelToken::new(),
+            stable_category_map: std::collections::HashMap::new(),
         }
     }
 
@@ -547,9 +585,10 @@ impl MapPlot {
         let schema = source.schema.clone();
         let df = source.df.clone();
         let tx = tx.clone();
+        let cat_map = self.stable_category_map.clone();
 
         rayon::spawn(move || {
-            let result = compute_map_data(plot_id, &config, &schema, &df, &token);
+            let result = compute_map_data(plot_id, &config, &schema, &df, &token, cat_map);
             match result {
                 Some(r) => {
                     let _ = tx.send(DataEvent::PlotSyncReady(
@@ -573,7 +612,10 @@ impl MapPlot {
         self.radii = Arc::new(result.radii);
         self.hover_labels = Arc::new(result.hover_labels);
         self.row_indices = Arc::new(result.row_indices);
+        self.category_entries = Arc::new(result.category_entries);
+        self.category_indices = Arc::new(result.category_indices);
         self.legend = Some(result.legend);
+        self.stable_category_map = result.stable_category_map;
         self.computing = false;
         self.has_loaded = true;
     }
@@ -809,6 +851,24 @@ impl MapPlot {
             let mut close_menu = false;
             let menu_pos = self.context_menu_pos.unwrap_or(egui::pos2(100.0, 100.0));
 
+            // Determine category value for this point (if categorical color mode)
+            let point_category: Option<(String, String)> = match &self.config.color_mode {
+                crate::plot::plot_config::ColorMode::Categorical { col } => {
+                    let point_idx = self.row_indices.iter().position(|&r| r == row);
+                    point_idx.and_then(|pi| {
+                        self.category_indices.get(pi)
+                            .and_then(|opt| *opt)
+                            .and_then(|ci| self.category_entries.get(ci))
+                            .map(|(label, _)| (col.clone(), label.clone()))
+                    })
+                }
+                _ => None,
+            };
+
+            let all_cols: Vec<String> = self.cached_schema.as_ref()
+                .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
+                .unwrap_or_default();
+
             let area_resp = egui::Area::new(egui::Id::new(("map_ctx_menu", id)))
                 .fixed_pos(menu_pos)
                 .order(egui::Order::Foreground)
@@ -819,7 +879,7 @@ impl MapPlot {
                         .corner_radius(egui::CornerRadius::from(4.0_f32))
                         .inner_margin(egui::Margin::from(6.0_f32))
                         .show(ui, |ui| {
-                            ui.set_min_width(160.0);
+                            ui.set_min_width(200.0);
                             ui.label(
                                 RichText::new(format!("Row {}", row))
                                     .color(c.text_secondary)
@@ -849,6 +909,105 @@ impl MapPlot {
                                 close_menu = true;
                             }
 
+                            // ── Category-aware options ──
+                            if let Some((col, value)) = &point_category {
+                                ui.separator();
+
+                                if ui.button(
+                                    RichText::new(format!("Filter to \"{}\"", value))
+                                        .color(c.text_primary).size(s.font_small),
+                                ).clicked() {
+                                    event = PlotWindowEvent::LegendAction(
+                                        crate::ui::right_pane::LegendAction::FilterToValue {
+                                            source_id: self.config.source_id,
+                                            col: col.clone(),
+                                            value: value.clone(),
+                                        }
+                                    );
+                                    close_menu = true;
+                                }
+
+                                if ui.button(
+                                    RichText::new(format!("Select all \"{}\"", value))
+                                        .color(c.text_primary).size(s.font_small),
+                                ).clicked() {
+                                    event = PlotWindowEvent::LegendAction(
+                                        crate::ui::right_pane::LegendAction::SelectCategory {
+                                            source_id: self.config.source_id,
+                                            plot_id: id,
+                                            col: col.clone(),
+                                            value: value.clone(),
+                                            additive: false,
+                                        }
+                                    );
+                                    close_menu = true;
+                                }
+                            }
+
+                            // ── "Select all sharing" for any color mode ──
+                            if !all_cols.is_empty() {
+                                ui.separator();
+                                ui.label(
+                                    RichText::new("Select all sharing →")
+                                        .color(c.text_secondary)
+                                        .size(s.font_small),
+                                );
+                                egui::ScrollArea::vertical()
+                                    .max_height(150.0)
+                                    .id_salt("map_sharing_cols")
+                                    .show(ui, |ui| {
+                                        for target_col in &all_cols {
+                                            if ui.button(
+                                                RichText::new(target_col)
+                                                    .size(s.font_small)
+                                                    .monospace(),
+                                            ).clicked() {
+                                                event = PlotWindowEvent::LegendAction(
+                                                    crate::ui::right_pane::LegendAction::SelectAllSharingRow {
+                                                        source_id: self.config.source_id,
+                                                        plot_id: id,
+                                                        row_index: row,
+                                                        target_col: target_col.clone(),
+                                                    }
+                                                );
+                                                close_menu = true;
+                                            }
+                                        }
+                                    });
+
+                                // "Filter to [column]" submenu for non-categorical modes
+                                if point_category.is_none() {
+                                    ui.separator();
+                                    ui.label(
+                                        RichText::new("Filter to →")
+                                            .color(c.text_secondary)
+                                            .size(s.font_small),
+                                    );
+                                    egui::ScrollArea::vertical()
+                                        .max_height(150.0)
+                                        .id_salt("map_filter_cols")
+                                        .show(ui, |ui| {
+                                            for target_col in &all_cols {
+                                                if ui.button(
+                                                    RichText::new(target_col)
+                                                        .size(s.font_small)
+                                                        .monospace(),
+                                                ).clicked() {
+                                                    event = PlotWindowEvent::LegendAction(
+                                                        crate::ui::right_pane::LegendAction::FilterToRowValue {
+                                                            source_id: self.config.source_id,
+                                                            col: target_col.clone(),
+                                                            row_index: row,
+                                                        }
+                                                    );
+                                                    close_menu = true;
+                                                }
+                                            }
+                                        });
+                                }
+                            }
+
+                            ui.separator();
                             if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
                                 close_menu = true;
                             }
@@ -968,12 +1127,13 @@ fn compute_map_data(
     schema: &DataSchema,
     df: &polars::prelude::DataFrame,
     token: &CancelToken,
+    mut stable_category_map: std::collections::HashMap<String, usize>,
 ) -> Option<MapSyncResult> {
     puffin::profile_function!();
     let n = df.height();
 
     let solid_color = Color32::from_rgb(100, 180, 255);
-    let (mut all_colors, color_legend, _cat_indices) = compute_colors(df, &config.color_mode, solid_color, n);
+    let (mut all_colors, color_legend, all_cat_indices) = compute_colors(df, &config.color_mode, solid_color, n, Some(&mut stable_category_map));
     if token.is_cancelled() { return None; }
 
     let base_radius = 3.0_f32;
@@ -1011,6 +1171,13 @@ fn compute_map_data(
     let mut radii: Vec<f32> = Vec::new();
     let mut hover_labels_vec: Vec<String> = Vec::new();
     let mut row_idx_vec: Vec<usize> = Vec::new();
+    let mut cat_idx_vec: Vec<Option<usize>> = Vec::new();
+
+    // Build category entries from the color legend (mirrors scatter plot logic).
+    let category_entries: Vec<(String, Color32)> = match &color_legend {
+        crate::plot::styling::ColorLegend::Categorical { entries, .. } => entries.clone(),
+        _ => Vec::new(),
+    };
 
     for i in 0..n {
         if i % 50_000 == 0 && token.is_cancelled() { return None; }
@@ -1024,6 +1191,7 @@ fn compute_map_data(
                 &hover_cols,
             ));
             row_idx_vec.push(orig_row_indices.get(i).copied().unwrap_or(i));
+            cat_idx_vec.push(all_cat_indices.get(i).copied().unwrap_or(None));
         }
     }
 
@@ -1035,13 +1203,17 @@ fn compute_map_data(
         radii,
         hover_labels: hover_labels_vec,
         row_indices: row_idx_vec,
+        category_entries,
+        category_indices: cat_idx_vec,
         legend: PlotLegendData {
             plot_id,
             plot_title: config.title.clone(),
+            source_id: config.source_id,
             color: color_legend,
             size: size_legend,
             alpha: alpha_legend,
         },
+        stable_category_map,
     })
 }
 

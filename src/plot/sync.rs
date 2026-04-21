@@ -8,6 +8,7 @@
 use crate::data::schema::DataSchema;
 use crate::plot::styling::PlotLegendData;
 use egui::Color32;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -46,6 +47,8 @@ pub struct ScatterSyncResult {
     pub x_labels: Vec<String>,
     pub y_labels: Vec<String>,
     pub legend: PlotLegendData,
+    /// Updated stable category→palette-index map (returned to persist on the plot struct).
+    pub stable_category_map: HashMap<String, usize>,
 }
 
 /// The precomputed data produced by a background sync for a map plot.
@@ -57,7 +60,12 @@ pub struct MapSyncResult {
     pub radii: Vec<f32>,
     pub hover_labels: Vec<String>,
     pub row_indices: Vec<usize>,
+    pub category_entries: Vec<(String, Color32)>,
+    /// Per-point category index into `category_entries`. `None` for non-categorical modes.
+    pub category_indices: Vec<Option<usize>>,
     pub legend: PlotLegendData,
+    /// Updated stable category→palette-index map (returned to persist on the plot struct).
+    pub stable_category_map: HashMap<String, usize>,
 }
 
 /// The precomputed data produced by a background sync for a scroll chart.

@@ -42,5 +42,6 @@ fn load_csv(id: usize, path: &PathBuf) -> Result<DataSource, String> {
         path: Some(path.clone()),
         schema,
         df,
+        column_aliases: std::collections::HashMap::new(),
     })
 }

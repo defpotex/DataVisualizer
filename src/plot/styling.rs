@@ -62,6 +62,7 @@ pub struct AlphaLegend {
 pub struct PlotLegendData {
     pub plot_id: usize,
     pub plot_title: String,
+    pub source_id: crate::data::source::SourceId,
     pub color: ColorLegend,
     pub size: Option<SizeLegend>,
     pub alpha: Option<AlphaLegend>,
@@ -73,11 +74,16 @@ pub struct PlotLegendData {
 /// Returns (colors, legend_metadata, category_indices). Colors are fully opaque (alpha=255).
 /// Caller is responsible for applying alpha afterward.
 /// `category_indices` is non-empty only for Categorical mode.
+///
+/// `stable_category_map` is an optional persistent mapping from category label → palette index.
+/// When provided, existing categories keep their assigned color across data updates.
+/// The map is updated in-place with any newly discovered categories.
 pub fn compute_colors(
     df: &DataFrame,
     mode: &ColorMode,
     solid_color: Color32,
     n: usize,
+    stable_category_map: Option<&mut HashMap<String, usize>>,
 ) -> (Vec<Color32>, ColorLegend, Vec<Option<usize>>) {
     puffin::profile_function!();
     match mode {
@@ -85,7 +91,7 @@ pub fn compute_colors(
             let c = Color32::from_rgb(solid_color.r(), solid_color.g(), solid_color.b());
             (vec![c; n], ColorLegend::Solid { color: solid_color }, Vec::new())
         }
-        ColorMode::Categorical { col } => compute_categorical_colors(df, col, n, solid_color),
+        ColorMode::Categorical { col } => compute_categorical_colors(df, col, n, solid_color, stable_category_map),
         ColorMode::Continuous { col, colormap, color_min, color_max, reverse } => {
             let (colors, legend) = compute_continuous_colors(df, col, colormap, n, solid_color, *color_min, *color_max, *reverse);
             (colors, legend, Vec::new())
@@ -98,6 +104,7 @@ fn compute_categorical_colors(
     col: &str,
     n: usize,
     fallback: Color32,
+    stable_map: Option<&mut HashMap<String, usize>>,
 ) -> (Vec<Color32>, ColorLegend, Vec<Option<usize>>) {
     let series = match df.column(col).ok().and_then(|c| c.as_series()).map(|s| s.clone()) {
         Some(s) => s,
@@ -122,20 +129,39 @@ fn compute_categorical_colors(
         }
     };
 
-    // Build ordered label → color mapping on first-seen order.
-    // Uses HashMap for O(1) lookup instead of O(k) linear scan per row.
+    // Build ordered label → color mapping.
+    // When a stable_map is provided, existing categories keep their palette index
+    // across data updates so colors don't shift when entities appear/disappear.
+    let mut local_map: HashMap<String, usize> = HashMap::new();
+    let label_to_idx: &mut HashMap<String, usize> = match stable_map {
+        Some(m) => m,
+        None => &mut local_map,
+    };
+
+    let next_idx_start = label_to_idx.values().copied().max().map(|m| m + 1).unwrap_or(0);
+    let mut next_idx = next_idx_start;
+
+    // Track which labels appear in this batch (in order of first appearance).
     let mut order: Vec<String> = Vec::new();
-    let mut label_to_idx: HashMap<String, usize> = HashMap::new();
+    let mut seen_in_batch: HashMap<String, usize> = HashMap::new();
+
     let mut cat_indices: Vec<Option<usize>> = Vec::with_capacity(n);
     let colors: Vec<Color32> = ca
         .into_iter()
         .map(|opt| {
             let s = opt.unwrap_or("(null)");
             let idx = if let Some(&pos) = label_to_idx.get(s) {
+                // Record in batch order tracking
+                if !seen_in_batch.contains_key(s) {
+                    seen_in_batch.insert(s.to_string(), pos);
+                    order.push(s.to_string());
+                }
                 pos
             } else {
-                let pos = order.len();
+                let pos = next_idx;
+                next_idx += 1;
                 label_to_idx.insert(s.to_string(), pos);
+                seen_in_batch.insert(s.to_string(), pos);
                 order.push(s.to_string());
                 pos
             };
@@ -144,11 +170,15 @@ fn compute_categorical_colors(
         })
         .collect();
 
-    let entries: Vec<(String, Color32)> = order
+    // Build legend entries sorted by palette index for consistent ordering.
+    let mut entries: Vec<(String, Color32)> = order
         .iter()
-        .enumerate()
-        .map(|(i, lbl)| (lbl.clone(), categorical_color(i)))
+        .map(|lbl| {
+            let idx = label_to_idx.get(lbl).copied().unwrap_or(0);
+            (lbl.clone(), categorical_color(idx))
+        })
         .collect();
+    entries.sort_by_key(|(lbl, _)| label_to_idx.get(lbl).copied().unwrap_or(0));
 
     (colors, ColorLegend::Categorical { col: col.to_string(), entries }, cat_indices)
 }

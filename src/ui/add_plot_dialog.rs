@@ -1,5 +1,5 @@
 use crate::data::schema::{FieldKind, FieldMeta};
-use crate::plot::plot_config::{AxisScale, MapPlotConfig, ScatterPlotConfig, ScrollChartConfig, TileScheme};
+use crate::plot::plot_config::{AxisScale, ColorMode, MapPlotConfig, ScatterPlotConfig, ScrollChartConfig, TileScheme};
 use crate::state::app_state::AppState;
 use crate::theme::AppTheme;
 use egui::{RichText, Ui, Window};
@@ -24,6 +24,7 @@ pub struct AddPlotDialog {
     scroll_time_col_idx: usize,
     scroll_y_selected: Vec<bool>,
     scroll_window_secs: f64,
+    scroll_vertical: bool,
 }
 
 impl Default for AddPlotDialog {
@@ -41,6 +42,7 @@ impl Default for AddPlotDialog {
             scroll_time_col_idx: 0,
             scroll_y_selected: Vec::new(),
             scroll_window_secs: 60.0,
+            scroll_vertical: false,
         }
     }
 }
@@ -66,6 +68,7 @@ impl AddPlotDialog {
         self.scroll_time_col_idx = 0;
         self.scroll_y_selected = Vec::new();
         self.scroll_window_secs = 60.0;
+        self.scroll_vertical = false;
     }
 
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState) -> Option<NewPlotConfig> {
@@ -76,6 +79,12 @@ impl AddPlotDialog {
         let mut result = None;
         let mut close = false;
 
+        let screen = ui.ctx().screen_rect();
+        let default_pos = egui::pos2(
+            (screen.center().x - 200.0).max(screen.min.x),
+            (screen.center().y - 200.0).max(screen.min.y),
+        );
+
         Window::new(
             RichText::new("Add Plot")
                 .color(c.text_primary)
@@ -85,7 +94,8 @@ impl AddPlotDialog {
         .collapsible(false)
         .resizable(false)
         .min_width(400.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_pos(default_pos)
+        .order(egui::Order::Foreground)
         .frame(egui::Frame {
             fill: c.bg_panel,
             stroke: egui::Stroke::new(1.0, c.border),
@@ -140,6 +150,7 @@ impl AddPlotDialog {
             ui.add_space(10.0);
 
             if let Some(source) = state.sources.get(self.selected_source_idx) {
+                let aliases = &source.column_aliases;
                 match self.plot_type {
                     PlotType::Map => {
                         // Map: only numeric/geo fields for lat/lon.
@@ -157,9 +168,9 @@ impl AddPlotDialog {
                         if self.lat_col_idx == 0 && lat_default != 0 { self.lat_col_idx = lat_default; }
                         if self.lon_col_idx == 0 && lon_default != 0 { self.lon_col_idx = lon_default; }
 
-                        name_col_picker(ui, "Latitude Column", &numeric, &mut self.lat_col_idx, "add_plot_lat", theme);
+                        name_col_picker(ui, "Latitude Column", &numeric, &mut self.lat_col_idx, "add_plot_lat", theme, aliases);
                         ui.add_space(8.0);
-                        name_col_picker(ui, "Longitude Column", &numeric, &mut self.lon_col_idx, "add_plot_lon", theme);
+                        name_col_picker(ui, "Longitude Column", &numeric, &mut self.lon_col_idx, "add_plot_lon", theme, aliases);
                         ui.add_space(10.0);
 
                         ui.label(RichText::new("Map Tiles").color(c.text_secondary).size(s.font_small));
@@ -209,9 +220,9 @@ impl AddPlotDialog {
                         if self.x_col_idx >= all_fields.len() { self.x_col_idx = 0; }
                         if self.y_col_idx >= all_fields.len() { self.y_col_idx = 0; }
 
-                        field_meta_picker(ui, "X Axis Column", &all_fields, &mut self.x_col_idx, "add_plot_x", theme);
+                        field_meta_picker(ui, "X Axis Column", &all_fields, &mut self.x_col_idx, "add_plot_x", theme, aliases);
                         ui.add_space(8.0);
-                        field_meta_picker(ui, "Y Axis Column", &all_fields, &mut self.y_col_idx, "add_plot_y", theme);
+                        field_meta_picker(ui, "Y Axis Column", &all_fields, &mut self.y_col_idx, "add_plot_y", theme, aliases);
                         ui.add_space(10.0);
 
                         // Title.
@@ -241,6 +252,8 @@ impl AddPlotDialog {
                                 size_config: None,
                                 alpha_config: None,
                                 hover_fields: Vec::new(),
+                                x_range: None,
+                                y_range: None,
                             }));
                             close = true;
                         }
@@ -269,7 +282,7 @@ impl AddPlotDialog {
                             self.scroll_y_selected = vec![false; numeric.len()];
                         }
 
-                        name_col_picker(ui, "Time Column", &numeric, &mut self.scroll_time_col_idx, "add_plot_scroll_time", theme);
+                        name_col_picker(ui, "Time Column", &numeric, &mut self.scroll_time_col_idx, "add_plot_scroll_time", theme, aliases);
                         ui.add_space(8.0);
 
                         ui.label(RichText::new("Y Columns").color(c.text_secondary).size(s.font_small));
@@ -279,9 +292,10 @@ impl AddPlotDialog {
                             .show(ui, |ui| {
                                 for (i, name) in numeric.iter().enumerate() {
                                     if i < self.scroll_y_selected.len() {
+                                        let display = aliases.get(*name).map(|a| a.as_str()).unwrap_or(name);
                                         ui.checkbox(
                                             &mut self.scroll_y_selected[i],
-                                            RichText::new(*name).size(s.font_small).monospace(),
+                                            RichText::new(display).size(s.font_small).monospace(),
                                         );
                                     }
                                 }
@@ -297,6 +311,12 @@ impl AddPlotDialog {
                                     .suffix(" s"),
                             );
                         });
+                        ui.add_space(4.0);
+
+                        ui.checkbox(
+                            &mut self.scroll_vertical,
+                            RichText::new("Vertical (time on Y axis)").color(c.text_secondary).size(s.font_small),
+                        );
                         ui.add_space(10.0);
 
                         // Title.
@@ -325,6 +345,11 @@ impl AddPlotDialog {
                                 y_cols,
                                 window_secs: self.scroll_window_secs,
                                 thresholds: Vec::new(),
+                                color_mode: ColorMode::default(),
+                                line_width: 2.0,
+                                alpha_config: None,
+                                vertical: self.scroll_vertical,
+                                y_range: None,
                             }));
                             close = true;
                         }
@@ -369,37 +394,45 @@ fn type_btn(ui: &mut Ui, label: &str, selected: bool, theme: &AppTheme) -> egui:
 }
 
 /// Column picker for a `&[&str]` list (map lat/lon — numeric only).
-fn name_col_picker(ui: &mut Ui, label: &str, cols: &[&str], idx: &mut usize, id: &str, theme: &AppTheme) {
+/// `display_names` maps original col name → alias (if any).
+fn name_col_picker(ui: &mut Ui, label: &str, cols: &[&str], idx: &mut usize, id: &str, theme: &AppTheme, aliases: &std::collections::HashMap<String, String>) {
     let c = &theme.colors;
     let s = &theme.spacing;
     ui.label(RichText::new(label).color(c.text_secondary).size(s.font_small));
     ui.add_space(2.0);
-    let selected_text = cols.get(*idx).copied().unwrap_or("(none)");
+    let selected_text = cols.get(*idx)
+        .map(|n| aliases.get(*n).map(|a| a.as_str()).unwrap_or(n))
+        .unwrap_or("(none)");
     egui::ComboBox::from_id_salt(id)
         .selected_text(RichText::new(selected_text).color(c.text_data).size(s.font_body).monospace())
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             for (i, name) in cols.iter().enumerate() {
-                ui.selectable_value(idx, i, RichText::new(*name).color(c.text_data).size(s.font_body).monospace());
+                let display = aliases.get(*name).map(|a| a.as_str()).unwrap_or(name);
+                ui.selectable_value(idx, i, RichText::new(display).color(c.text_data).size(s.font_body).monospace());
             }
         });
 }
 
 /// Column picker for `&[&FieldMeta]` — shows icon + name for all field types.
-fn field_meta_picker(ui: &mut Ui, label: &str, fields: &[&FieldMeta], idx: &mut usize, id: &str, theme: &AppTheme) {
+fn field_meta_picker(ui: &mut Ui, label: &str, fields: &[&FieldMeta], idx: &mut usize, id: &str, theme: &AppTheme, aliases: &std::collections::HashMap<String, String>) {
     let c = &theme.colors;
     let s = &theme.spacing;
     ui.label(RichText::new(label).color(c.text_secondary).size(s.font_small));
     ui.add_space(2.0);
     let selected_text = fields.get(*idx)
-        .map(|f| format!("{} {}", f.kind.icon(), f.name))
+        .map(|f| {
+            let display = aliases.get(&f.name).map(|a| a.as_str()).unwrap_or(&f.name);
+            format!("{} {}", f.kind.icon(), display)
+        })
         .unwrap_or_else(|| "(none)".to_string());
     egui::ComboBox::from_id_salt(id)
         .selected_text(RichText::new(&selected_text).color(c.text_data).size(s.font_body).monospace())
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             for (i, field) in fields.iter().enumerate() {
-                let entry = format!("{} {}", field.kind.icon(), field.name);
+                let display = aliases.get(&field.name).map(|a| a.as_str()).unwrap_or(&field.name);
+                let entry = format!("{} {}", field.kind.icon(), display);
                 ui.selectable_value(idx, i, RichText::new(&entry).color(c.text_data).size(s.font_body).monospace());
             }
         });

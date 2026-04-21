@@ -21,7 +21,7 @@ fn parse_args() -> Result<Config, String> {
     let mut target = "127.0.0.1:5005".to_string();
     let mut speed = 1.0f64;
     let mut loop_mode = false;
-    let mut send_header = false;
+    let mut send_header = true;
     let mut i = 0;
 
     while i < args.len() {
@@ -44,7 +44,8 @@ fn parse_args() -> Result<Config, String> {
                 }
             }
             "--loop"   => loop_mode = true,
-            "--header" => send_header = true,
+            "--header" => send_header = true, // kept for backwards compat (now default)
+            "--no-header" => send_header = false,
             other => return Err(format!("Unknown argument: {}", other)),
         }
         i += 1;
@@ -72,11 +73,11 @@ OPTIONS:
   --speed <MULT>       Playback speed multiplier [default: 1.0]
                          1.0 = real-time  |  60.0 = 1 min/sec  |  0 = max rate
   --loop               Restart from beginning when file ends
-  --header             Send CSV header row as the first UDP packet
+  --no-header          Suppress CSV header packets (header sent by default)
   --help               Print this message
 
 EXAMPLES:
-  cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 50 --header
+  cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 50
   cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 10 --loop
   cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --target 192.168.1.10:9000
 
@@ -85,7 +86,7 @@ VERIFY (no main app needed):
   nc -ul 5005
 
   # Terminal 2 — stream at 100x speed
-  cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 100 --header
+  cargo run -p udp_streamer -- --file test_data/adsb_conus.csv --speed 100
 "#
     );
 }
@@ -237,11 +238,14 @@ fn run(cfg: Config, shutdown: Arc<AtomicBool>) -> Result<(), String> {
             println!("  [loop {}]", pass);
         }
 
-        // Optionally send the header as the first packet of each pass
+        // Optionally send the header as the first packet of each pass.
+        // Prefix with "#HEADER:" so receivers can distinguish from data rows
+        // that happen to contain non-numeric text fields.
         if cfg.send_header {
-            let header_line = format!("{}\n", data.header);
+            let header_line = format!("#HEADER:{}\n", data.header);
             send_packet(&socket, header_line.as_bytes())?;
         }
+        let mut rows_since_header: u64 = 0;
 
         let mut row_iter = data.rows.iter().zip(data.timestamps.iter()).peekable();
         let pass_wall_start = Instant::now();
@@ -268,6 +272,16 @@ fn run(cfg: Config, shutdown: Arc<AtomicBool>) -> Result<(), String> {
                     if shutdown.load(Ordering::SeqCst) { break 'outer; }
                     let remaining = wake.saturating_duration_since(Instant::now());
                     std::thread::sleep(remaining.min(Duration::from_millis(50)));
+                }
+            }
+
+            // Periodically resend header so late-joining receivers get column names.
+            if cfg.send_header {
+                rows_since_header += 1;
+                if rows_since_header >= 500 {
+                    let header_line = format!("#HEADER:{}\n", data.header);
+                    let _ = send_packet(&socket, header_line.as_bytes());
+                    rows_since_header = 0;
                 }
             }
 

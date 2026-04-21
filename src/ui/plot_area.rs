@@ -1,3 +1,4 @@
+use crate::data::source::SourceId;
 use crate::plot::plot_config::{MapPlotConfig, ScatterPlotConfig, ScrollChartConfig};
 use crate::plot::styling::PlotLegendData;
 use crate::plot::sync::PlotSyncEvent;
@@ -59,6 +60,10 @@ impl PlotArea {
         self.plot_manager.legend_data()
     }
 
+    pub fn rebind_plot_source(&mut self, plot_id: usize, new_source_id: SourceId) {
+        self.plot_manager.rebind_plot_source(plot_id, new_source_id);
+    }
+
     pub fn show_windows(
         &mut self,
         ctx: &Context,
@@ -67,8 +72,9 @@ impl PlotArea {
         grid_size: f32,
         perf: &crate::state::perf_settings::PerformanceSettings,
         selection: Option<&SelectionSet>,
+        available_sources: &[(SourceId, String)],
     ) -> Vec<PlotAction> {
-        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, perf, selection)
+        self.plot_manager.show_windows(ctx, theme, central_rect, grid_size, perf, selection, available_sources)
     }
 
     pub fn show(&mut self, ui: &mut Ui, theme: &AppTheme, state: &AppState, grid_size: f32) {

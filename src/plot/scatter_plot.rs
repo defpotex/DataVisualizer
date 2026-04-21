@@ -47,6 +47,13 @@ struct ScatterConfigDialog {
     draft_alpha_max: f32,
     // Hover fields
     draft_hover_fields: HashSet<String>,
+    // Fixed ranges
+    draft_x_range_enabled: bool,
+    draft_x_range_min: f64,
+    draft_x_range_max: f64,
+    draft_y_range_enabled: bool,
+    draft_y_range_min: f64,
+    draft_y_range_max: f64,
 }
 
 impl Default for ScatterConfigDialog {
@@ -75,6 +82,12 @@ impl Default for ScatterConfigDialog {
             draft_alpha_min: 0.2,
             draft_alpha_max: 1.0,
             draft_hover_fields: HashSet::new(),
+            draft_x_range_enabled: false,
+            draft_x_range_min: 0.0,
+            draft_x_range_max: 100.0,
+            draft_y_range_enabled: false,
+            draft_y_range_min: 0.0,
+            draft_y_range_max: 100.0,
         }
     }
 }
@@ -135,6 +148,21 @@ impl ScatterConfigDialog {
         }
 
         self.draft_hover_fields = config.hover_fields.iter().cloned().collect();
+
+        if let Some((lo, hi)) = config.x_range {
+            self.draft_x_range_enabled = true;
+            self.draft_x_range_min = lo;
+            self.draft_x_range_max = hi;
+        } else {
+            self.draft_x_range_enabled = false;
+        }
+        if let Some((lo, hi)) = config.y_range {
+            self.draft_y_range_enabled = true;
+            self.draft_y_range_min = lo;
+            self.draft_y_range_max = hi;
+        } else {
+            self.draft_y_range_enabled = false;
+        }
     }
 
     fn show(
@@ -159,6 +187,12 @@ impl ScatterConfigDialog {
         if self.draft_size_col_idx >= nf { self.draft_size_col_idx = 0; }
         if self.draft_alpha_col_idx >= nf { self.draft_alpha_col_idx = 0; }
 
+        let screen = ctx.screen_rect();
+        let default_pos = egui::pos2(
+            (screen.center().x - 200.0).max(screen.min.x),
+            (screen.center().y - 250.0).max(screen.min.y),
+        );
+
         egui::Window::new(
             RichText::new("Configure Scatter Plot")
                 .color(c.text_primary)
@@ -169,7 +203,8 @@ impl ScatterConfigDialog {
         .collapsible(false)
         .resizable(true)
         .min_width(360.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_pos(default_pos)
+        .order(egui::Order::Foreground)
         .frame(egui::Frame {
             fill: c.bg_panel,
             stroke: egui::Stroke::new(1.0, c.border),
@@ -349,79 +384,152 @@ impl ScatterConfigDialog {
                             });
                     });
 
-                ui.add_space(16.0);
+                ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
 
+                // ── Fixed axis ranges ────────────────────────────────
+                ui.label(RichText::new("AXIS RANGES").color(c.text_secondary).size(s.font_small));
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut self.draft_x_range_enabled,
+                    RichText::new("Fixed X range").color(c.text_secondary).size(s.font_small),
+                );
+                if self.draft_x_range_enabled {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Min").color(c.text_secondary).size(s.font_small));
+                        ui.add(egui::DragValue::new(&mut self.draft_x_range_min).speed(0.1));
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Max").color(c.text_secondary).size(s.font_small));
+                        ui.add(egui::DragValue::new(&mut self.draft_x_range_max).speed(0.1));
+                    });
+                    if self.draft_x_range_min >= self.draft_x_range_max {
+                        self.draft_x_range_max = self.draft_x_range_min + 1.0;
+                    }
+                }
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut self.draft_y_range_enabled,
+                    RichText::new("Fixed Y range").color(c.text_secondary).size(s.font_small),
+                );
+                if self.draft_y_range_enabled {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Min").color(c.text_secondary).size(s.font_small));
+                        ui.add(egui::DragValue::new(&mut self.draft_y_range_min).speed(0.1));
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Max").color(c.text_secondary).size(s.font_small));
+                        ui.add(egui::DragValue::new(&mut self.draft_y_range_max).speed(0.1));
+                    });
+                    if self.draft_y_range_min >= self.draft_y_range_max {
+                        self.draft_y_range_max = self.draft_y_range_min + 1.0;
+                    }
+                }
+            }); // end ScrollArea
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            {
                 let can_apply = !fields.is_empty() && !self.draft_title.trim().is_empty();
+
+                // Helper closure to build config from current draft state
+                let build_config = |s: &ScatterConfigDialog| -> ScatterPlotConfig {
+                    let x_col = fields.get(s.draft_x_idx).map(|f| f.name.clone()).unwrap_or_default();
+                    let y_col = fields.get(s.draft_y_idx).map(|f| f.name.clone()).unwrap_or_default();
+
+                    let color_mode = match s.draft_color_variant {
+                        1 => ColorMode::Categorical {
+                            col: fields.get(s.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                        },
+                        2 => ColorMode::Continuous {
+                            col: fields.get(s.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                            colormap: s.draft_colormap.clone(),
+                            color_min: if s.draft_color_min_enabled { Some(s.draft_color_min) } else { None },
+                            color_max: if s.draft_color_max_enabled { Some(s.draft_color_max) } else { None },
+                            reverse: s.draft_color_reverse,
+                        },
+                        _ => ColorMode::Solid,
+                    };
+
+                    let size_config = if s.draft_size_enabled {
+                        Some(SizeConfig {
+                            col: fields.get(s.draft_size_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                            min_px: s.draft_size_min_px,
+                            max_px: s.draft_size_max_px,
+                        })
+                    } else { None };
+
+                    let alpha_config = if s.draft_alpha_enabled {
+                        Some(AlphaConfig {
+                            col: fields.get(s.draft_alpha_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
+                            min_alpha: s.draft_alpha_min,
+                            max_alpha: s.draft_alpha_max,
+                        })
+                    } else { None };
+
+                    let mut hover_fields: Vec<String> = s.draft_hover_fields.iter().cloned().collect();
+                    hover_fields.sort_unstable();
+
+                    let x_range = if s.draft_x_range_enabled {
+                        Some((s.draft_x_range_min, s.draft_x_range_max))
+                    } else { None };
+                    let y_range = if s.draft_y_range_enabled {
+                        Some((s.draft_y_range_min, s.draft_y_range_max))
+                    } else { None };
+
+                    ScatterPlotConfig {
+                        id: config.id,
+                        title: s.draft_title.trim().to_string(),
+                        source_id: config.source_id,
+                        x_col,
+                        y_col,
+                        x_scale: s.draft_x_scale.clone(),
+                        y_scale: s.draft_y_scale.clone(),
+                        color_mode,
+                        size_config,
+                        alpha_config,
+                        hover_fields,
+                        x_range,
+                        y_range,
+                    }
+                };
+
                 ui.horizontal(|ui| {
-                    let apply_btn = egui::Button::new(
-                        RichText::new("Apply")
+                    // OK = Apply + close
+                    let ok_btn = egui::Button::new(
+                        RichText::new("OK")
                             .color(if can_apply { c.bg_app } else { c.text_secondary })
                             .size(s.font_body)
                             .strong(),
                     )
                     .fill(if can_apply { c.accent_primary } else { c.widget_bg })
-                    .min_size(egui::vec2(90.0, 0.0));
-
-                    if ui.add_enabled(can_apply, apply_btn).clicked() {
-                        let x_col = fields.get(self.draft_x_idx).map(|f| f.name.clone()).unwrap_or_default();
-                        let y_col = fields.get(self.draft_y_idx).map(|f| f.name.clone()).unwrap_or_default();
-
-                        let color_mode = match self.draft_color_variant {
-                            1 => ColorMode::Categorical {
-                                col: fields.get(self.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                            },
-                            2 => ColorMode::Continuous {
-                                col: fields.get(self.draft_color_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                                colormap: self.draft_colormap.clone(),
-                                color_min: if self.draft_color_min_enabled { Some(self.draft_color_min) } else { None },
-                                color_max: if self.draft_color_max_enabled { Some(self.draft_color_max) } else { None },
-                                reverse: self.draft_color_reverse,
-                            },
-                            _ => ColorMode::Solid,
-                        };
-
-                        let size_config = if self.draft_size_enabled {
-                            Some(SizeConfig {
-                                col: fields.get(self.draft_size_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                                min_px: self.draft_size_min_px,
-                                max_px: self.draft_size_max_px,
-                            })
-                        } else { None };
-
-                        let alpha_config = if self.draft_alpha_enabled {
-                            Some(AlphaConfig {
-                                col: fields.get(self.draft_alpha_col_idx).map(|f| f.name.clone()).unwrap_or_default(),
-                                min_alpha: self.draft_alpha_min,
-                                max_alpha: self.draft_alpha_max,
-                            })
-                        } else { None };
-
-                        let mut hover_fields: Vec<String> = self.draft_hover_fields.iter().cloned().collect();
-                        hover_fields.sort_unstable();
-
-                        result = Some(ScatterPlotConfig {
-                            id: config.id,
-                            title: self.draft_title.trim().to_string(),
-                            source_id: config.source_id,
-                            x_col,
-                            y_col,
-                            x_scale: self.draft_x_scale.clone(),
-                            y_scale: self.draft_y_scale.clone(),
-                            color_mode,
-                            size_config,
-                            alpha_config,
-                            hover_fields,
-                        });
+                    .min_size(egui::vec2(70.0, 0.0));
+                    if ui.add_enabled(can_apply, ok_btn).clicked() {
+                        result = Some(build_config(self));
                         close = true;
                     }
-                    ui.add_space(8.0);
+
+                    ui.add_space(4.0);
+
+                    // Apply = apply but keep open
+                    let apply_btn = egui::Button::new(
+                        RichText::new("Apply")
+                            .color(if can_apply { c.text_primary } else { c.text_secondary })
+                            .size(s.font_body),
+                    )
+                    .min_size(egui::vec2(70.0, 0.0));
+                    if ui.add_enabled(can_apply, apply_btn).clicked() {
+                        result = Some(build_config(self));
+                    }
+
+                    ui.add_space(4.0);
+
                     if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
                         close = true;
                     }
                 });
-            });
+            }
         });
 
         if close { self.is_open = false; }
@@ -462,6 +570,11 @@ pub struct ScatterPlot {
     has_loaded: bool,
     /// Token to cancel a running background sync.
     cancel_token: CancelToken,
+    /// Persistent category→palette-index mapping so colors don't shift across updates.
+    stable_category_map: std::collections::HashMap<String, usize>,
+    /// When true, fixed-axis bounds will be applied on the next frame, then cleared.
+    /// This lets the user pan/zoom after the initial bounds are set.
+    bounds_dirty: bool,
 }
 
 impl ScatterPlot {
@@ -488,6 +601,8 @@ impl ScatterPlot {
             computing: false,
             has_loaded: false,
             cancel_token: CancelToken::new(),
+            stable_category_map: std::collections::HashMap::new(),
+            bounds_dirty: true,
         }
     }
 
@@ -510,9 +625,10 @@ impl ScatterPlot {
         let schema = source.schema.clone();
         let df = source.df.clone();
         let tx = tx.clone();
+        let cat_map = self.stable_category_map.clone();
 
         rayon::spawn(move || {
-            let result = compute_scatter_data(plot_id, &config, &schema, &df, &token);
+            let result = compute_scatter_data(plot_id, &config, &schema, &df, &token, cat_map);
             match result {
                 Some(r) => {
                     let _ = tx.send(DataEvent::PlotSyncReady(
@@ -531,6 +647,10 @@ impl ScatterPlot {
 
     /// Apply a completed sync result from the background thread.
     pub fn apply_sync_result(&mut self, result: ScatterSyncResult) {
+        // Only mark bounds dirty on the first load so fixed ranges snap in
+        // once. Subsequent data updates (streaming/playback) must NOT relock
+        // the bounds — otherwise the user can never pan or zoom.
+        let first_load = !self.has_loaded;
         self.cached_schema = Some(result.schema);
         self.points = Arc::new(result.points);
         self.colors = Arc::new(result.colors);
@@ -542,8 +662,12 @@ impl ScatterPlot {
         self.x_labels = Arc::new(result.x_labels);
         self.y_labels = Arc::new(result.y_labels);
         self.legend = Some(result.legend);
+        self.stable_category_map = result.stable_category_map;
         self.computing = false;
         self.has_loaded = true;
+        if first_load {
+            self.bounds_dirty = true;
+        }
     }
 
     /// Cancel any in-flight background sync and clear the computing flag.
@@ -552,7 +676,10 @@ impl ScatterPlot {
         self.computing = false;
     }
 
-    pub fn apply_config(&mut self, config: ScatterPlotConfig) { self.config = config; }
+    pub fn apply_config(&mut self, config: ScatterPlotConfig) {
+        self.bounds_dirty = true;
+        self.config = config;
+    }
     pub fn plot_id(&self) -> usize { self.config.id }
     pub fn legend_data(&self) -> Option<&PlotLegendData> { self.legend.as_ref() }
 
@@ -653,10 +780,22 @@ impl ScatterPlot {
                         id,
                         _selection,
                         self.context_menu_row.is_some(),
+                        self.bounds_dirty,
                     );
                 }
             });
         });
+        // Check if double-click requested a bounds reset.
+        let reset_key = egui::Id::new(("scatter_bounds_reset", id));
+        let reset_requested: bool = ctx.memory_mut(|mem| {
+            mem.data.get_temp(reset_key).unwrap_or(false)
+        });
+        if reset_requested {
+            ctx.memory_mut(|mem| { mem.data.remove::<bool>(reset_key); });
+            self.bounds_dirty = true;
+        } else {
+            self.bounds_dirty = false;
+        }
         if cancel_clicked {
             self.cancel_sync();
         }
@@ -752,6 +891,25 @@ impl ScatterPlot {
             let mut close_menu = false;
             let menu_pos = self.context_menu_pos.unwrap_or(egui::pos2(100.0, 100.0));
 
+            // Determine category value for this point (if categorical color mode)
+            let point_category: Option<(String, String)> = match &self.config.color_mode {
+                crate::plot::plot_config::ColorMode::Categorical { col } => {
+                    // Find which point index this row corresponds to
+                    let point_idx = self.row_indices.iter().position(|&r| r == row);
+                    point_idx.and_then(|pi| {
+                        self.category_indices.get(pi)
+                            .and_then(|opt| *opt)
+                            .and_then(|ci| self.category_entries.get(ci))
+                            .map(|(label, _)| (col.clone(), label.clone()))
+                    })
+                }
+                _ => None,
+            };
+
+            let all_cols: Vec<String> = self.cached_schema.as_ref()
+                .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
+                .unwrap_or_default();
+
             let area_resp = egui::Area::new(egui::Id::new(("scatter_ctx_menu", id)))
                 .fixed_pos(menu_pos)
                 .order(egui::Order::Foreground)
@@ -762,7 +920,7 @@ impl ScatterPlot {
                         .corner_radius(egui::CornerRadius::from(4.0_f32))
                         .inner_margin(egui::Margin::from(6.0_f32))
                         .show(ui, |ui| {
-                            ui.set_min_width(160.0);
+                            ui.set_min_width(200.0);
                             ui.label(
                                 RichText::new(format!("Row {}", row))
                                     .color(c.text_secondary)
@@ -792,6 +950,107 @@ impl ScatterPlot {
                                 close_menu = true;
                             }
 
+                            // ── Category-aware options ──
+                            if let Some((col, value)) = &point_category {
+                                ui.separator();
+
+                                // Filter to this category value
+                                if ui.button(
+                                    RichText::new(format!("Filter to \"{}\"", value))
+                                        .color(c.text_primary).size(s.font_small),
+                                ).clicked() {
+                                    event = PlotWindowEvent::LegendAction(
+                                        crate::ui::right_pane::LegendAction::FilterToValue {
+                                            source_id: self.config.source_id,
+                                            col: col.clone(),
+                                            value: value.clone(),
+                                        }
+                                    );
+                                    close_menu = true;
+                                }
+
+                                // Select all with this value
+                                if ui.button(
+                                    RichText::new(format!("Select all \"{}\"", value))
+                                        .color(c.text_primary).size(s.font_small),
+                                ).clicked() {
+                                    event = PlotWindowEvent::LegendAction(
+                                        crate::ui::right_pane::LegendAction::SelectCategory {
+                                            source_id: self.config.source_id,
+                                            plot_id: id,
+                                            col: col.clone(),
+                                            value: value.clone(),
+                                            additive: false,
+                                        }
+                                    );
+                                    close_menu = true;
+                                }
+                            }
+
+                            // ── "Select all sharing" for any color mode ──
+                            if !all_cols.is_empty() {
+                                ui.separator();
+                                ui.label(
+                                    RichText::new("Select all sharing →")
+                                        .color(c.text_secondary)
+                                        .size(s.font_small),
+                                );
+                                egui::ScrollArea::vertical()
+                                    .max_height(150.0)
+                                    .id_salt("scatter_sharing_cols")
+                                    .show(ui, |ui| {
+                                        for target_col in &all_cols {
+                                            if ui.button(
+                                                RichText::new(target_col)
+                                                    .size(s.font_small)
+                                                    .monospace(),
+                                            ).clicked() {
+                                                event = PlotWindowEvent::LegendAction(
+                                                    crate::ui::right_pane::LegendAction::SelectAllSharingRow {
+                                                        source_id: self.config.source_id,
+                                                        plot_id: id,
+                                                        row_index: row,
+                                                        target_col: target_col.clone(),
+                                                    }
+                                                );
+                                                close_menu = true;
+                                            }
+                                        }
+                                    });
+
+                                // "Filter to [column]" submenu for non-categorical modes
+                                if point_category.is_none() {
+                                    ui.separator();
+                                    ui.label(
+                                        RichText::new("Filter to →")
+                                            .color(c.text_secondary)
+                                            .size(s.font_small),
+                                    );
+                                    egui::ScrollArea::vertical()
+                                        .max_height(150.0)
+                                        .id_salt("scatter_filter_cols")
+                                        .show(ui, |ui| {
+                                            for target_col in &all_cols {
+                                                if ui.button(
+                                                    RichText::new(target_col)
+                                                        .size(s.font_small)
+                                                        .monospace(),
+                                                ).clicked() {
+                                                    event = PlotWindowEvent::LegendAction(
+                                                        crate::ui::right_pane::LegendAction::FilterToRowValue {
+                                                            source_id: self.config.source_id,
+                                                            col: target_col.clone(),
+                                                            row_index: row,
+                                                        }
+                                                    );
+                                                    close_menu = true;
+                                                }
+                                            }
+                                        });
+                                }
+                            }
+
+                            ui.separator();
                             if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
                                 close_menu = true;
                             }
@@ -831,6 +1090,10 @@ pub enum PlotWindowEvent {
     ConfigChanged(PlotConfig),
     SelectionChanged(Option<crate::state::selection::SelectionSet>),
     FilterToSelection(crate::state::selection::SelectionSet),
+    /// Legend-style actions from point context menu.
+    LegendAction(crate::ui::right_pane::LegendAction),
+    /// Request to rebind this plot to a different source.
+    RebindSource { plot_id: usize, new_source_id: crate::data::source::SourceId },
 }
 
 // ── Toolbar ───────────────────────────────────────────────────────────────────
@@ -916,6 +1179,7 @@ fn compute_scatter_data(
     schema: &DataSchema,
     df: &DataFrame,
     token: &CancelToken,
+    mut stable_category_map: std::collections::HashMap<String, usize>,
 ) -> Option<ScatterSyncResult> {
     puffin::profile_function!();
     let n = df.height();
@@ -925,7 +1189,7 @@ fn compute_scatter_data(
     if token.is_cancelled() { return None; }
 
     let solid_color = Color32::from_rgb(100, 200, 255);
-    let (mut all_colors, color_legend, all_cat_indices) = compute_colors(df, &config.color_mode, solid_color, n);
+    let (mut all_colors, color_legend, all_cat_indices) = compute_colors(df, &config.color_mode, solid_color, n, Some(&mut stable_category_map));
     if token.is_cancelled() { return None; }
     let (all_radii, size_legend) = compute_radii(df, config.size_config.as_ref(), 2.5, n);
     let base_alpha = 200.0 / 255.0;
@@ -1000,10 +1264,12 @@ fn compute_scatter_data(
         legend: PlotLegendData {
             plot_id,
             plot_title: config.title.clone(),
+            source_id: config.source_id,
             color: color_legend,
             size: size_legend,
             alpha: alpha_legend,
         },
+        stable_category_map,
     })
 }
 
@@ -1027,6 +1293,7 @@ fn show_scatter(
     plot_id: usize,
     selection: Option<&crate::state::selection::SelectionSet>,
     context_menu_open: bool,
+    bounds_dirty: bool,
 ) {
     puffin::profile_function!();
     let n = points.len();
@@ -1102,7 +1369,10 @@ fn show_scatter(
         .allow_drag(false)
         .allow_scroll(true)
         .allow_boxed_zoom(true)
-        .auto_bounds(egui::Vec2b::new(!x_is_cat, !y_is_cat))
+        .auto_bounds(egui::Vec2b::new(
+            !x_is_cat && config.x_range.is_none(),
+            !y_is_cat && config.y_range.is_none(),
+        ))
         .label_formatter(move |_name, val: &egui_plot::PlotPoint| {
             if use_painter_fmt || context_menu_open { return String::new(); }
             // Nearest-point lookup for Solid mode.
@@ -1178,6 +1448,52 @@ fn show_scatter(
                 [bounds.min()[0] - dx, bounds.min()[1] - dy],
                 [bounds.max()[0] - dx, bounds.max()[1] - dy],
             ));
+        }
+
+        // Apply fixed axis ranges when bounds are dirty (new data or config change).
+        // Only applied once so the user can pan/zoom freely afterward.
+        if bounds_dirty && (config.x_range.is_some() || config.y_range.is_some()) {
+            let data_x_range = || -> (f64, f64) {
+                let mut lo = f64::INFINITY;
+                let mut hi = f64::NEG_INFINITY;
+                for i in (0..n).step_by(step) {
+                    let x = points[i][0];
+                    if x.is_finite() { if x < lo { lo = x; } if x > hi { hi = x; } }
+                }
+                let margin = (hi - lo).abs() * 0.05;
+                if margin == 0.0 { (lo - 1.0, hi + 1.0) } else { (lo - margin, hi + margin) }
+            };
+            let data_y_range = || -> (f64, f64) {
+                let mut lo = f64::INFINITY;
+                let mut hi = f64::NEG_INFINITY;
+                for i in (0..n).step_by(step) {
+                    let y = points[i][1];
+                    if y.is_finite() { if y < lo { lo = y; } if y > hi { hi = y; } }
+                }
+                let margin = (hi - lo).abs() * 0.05;
+                if margin == 0.0 { (lo - 1.0, hi + 1.0) } else { (lo - margin, hi + margin) }
+            };
+
+            match (config.x_range, config.y_range) {
+                (Some((x_lo, x_hi)), Some((y_lo, y_hi))) => {
+                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                        [x_lo, y_lo], [x_hi, y_hi],
+                    ));
+                }
+                (Some((x_lo, x_hi)), None) => {
+                    let (y_lo, y_hi) = data_y_range();
+                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                        [x_lo, y_lo], [x_hi, y_hi],
+                    ));
+                }
+                (None, Some((y_lo, y_hi))) => {
+                    let (x_lo, x_hi) = data_x_range();
+                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                        [x_lo, y_lo], [x_hi, y_hi],
+                    ));
+                }
+                (None, None) => {}
+            }
         }
 
         if is_categorical || is_continuous {
@@ -1356,6 +1672,12 @@ fn show_scatter(
                 interaction = Some(ScatterInteraction::ClearSelection);
             }
         }
+    }
+
+    // Double-click: signal bounds reset so fixed axes snap back.
+    if response.double_clicked() {
+        let reset_key = egui::Id::new(("scatter_bounds_reset", plot_id));
+        ui.ctx().memory_mut(|mem| mem.data.insert_temp(reset_key, true));
     }
 
     // Secondary click (right-click).

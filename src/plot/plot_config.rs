@@ -210,6 +210,12 @@ pub struct ScatterPlotConfig {
     /// Extra columns shown in the hover tooltip (x and y are always included).
     #[serde(default)]
     pub hover_fields: Vec<String>,
+    /// Fixed X-axis range. None = auto-fit.
+    #[serde(default)]
+    pub x_range: Option<(f64, f64)>,
+    /// Fixed Y-axis range. None = auto-fit.
+    #[serde(default)]
+    pub y_range: Option<(f64, f64)>,
 }
 
 // ── Threshold ────────────────────────────────────────────────────────────────
@@ -257,7 +263,24 @@ pub struct ScrollChartConfig {
     /// Threshold/tripwire lines.
     #[serde(default)]
     pub thresholds: Vec<Threshold>,
+    /// How the series lines are colored.
+    #[serde(default)]
+    pub color_mode: ColorMode,
+    /// Line width in pixels.
+    #[serde(default = "default_line_width")]
+    pub line_width: f32,
+    /// Optional column-driven opacity.
+    #[serde(default)]
+    pub alpha_config: Option<AlphaConfig>,
+    /// Orientation: false = time on X (horizontal scroll), true = time on Y (vertical scroll).
+    #[serde(default)]
+    pub vertical: bool,
+    /// Fixed Y-axis range. None = auto-fit.
+    #[serde(default)]
+    pub y_range: Option<(f64, f64)>,
 }
+
+fn default_line_width() -> f32 { 2.0 }
 
 fn default_window_secs() -> f64 {
     60.0

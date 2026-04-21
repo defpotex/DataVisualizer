@@ -4,7 +4,7 @@ use crate::data::schema::FieldKind;
 use crate::data::udp_receiver::{start_udp_receiver, UdpStreamConfig};
 use crate::state::app_state::AppState;
 use crate::theme::{AppTheme, ThemePreset};
-use crate::ui::{left_pane::LeftPane, menu_bar::MenuBar, plot_area::PlotArea, right_pane::RightPane};
+use crate::ui::{left_pane::LeftPane, menu_bar::MenuBar, plot_area::PlotArea, right_pane::{LegendAction, RightPane}};
 use crate::ui::plot_grid::PlotAction;
 use crate::ui::udp_stream_dialog::UdpStreamDialog;
 use eframe::Storage;
@@ -192,6 +192,7 @@ impl eframe::App for DataVisualizerApp {
             });
 
         // ── Right pane (legends) — must come before CentralPanel ──────────────
+        let mut legend_actions = Vec::new();
         if self.right_pane_visible {
             egui::Panel::right("right_pane")
                 .resizable(true)
@@ -201,7 +202,15 @@ impl eframe::App for DataVisualizerApp {
                 .frame(side_panel_frame(&theme))
                 .show(ctx, |ui| {
                     let legends = self.plot_area.legend_data();
-                    self.right_pane.show(ui, &theme, &legends);
+                    // Build column list per source for context menu
+                    let mut cols_by_source = std::collections::HashMap::new();
+                    let mut aliases_by_source = std::collections::HashMap::new();
+                    for src in &self.app_state.sources {
+                        let cols: Vec<String> = src.schema.fields.iter().map(|f| f.name.clone()).collect();
+                        cols_by_source.insert(src.id, cols);
+                        aliases_by_source.insert(src.id, src.column_aliases.clone());
+                    }
+                    legend_actions = self.right_pane.show(ui, &theme, &legends, &cols_by_source, &aliases_by_source);
                 });
         }
 
@@ -227,7 +236,10 @@ impl eframe::App for DataVisualizerApp {
         self.central_rect = central_response.response.rect;
 
         // ── Floating plot windows ─────────────────────────────────────────────
-        let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, &self.app_state.perf, self.app_state.selection.as_ref());
+        let available_sources: Vec<(crate::data::source::SourceId, String)> = self.app_state.sources.iter()
+            .map(|s| (s.id, s.label.clone()))
+            .collect();
+        let plot_actions = self.plot_area.show_windows(ctx, &theme, self.central_rect, GRID_SIZE, &self.app_state.perf, self.app_state.selection.as_ref(), &available_sources);
         for action in plot_actions {
             self.handle_plot_action(action);
         }
@@ -235,6 +247,11 @@ impl eframe::App for DataVisualizerApp {
         // ── UDP Stream dialog ─────────────────────────────────────────────
         if let Some(udp_config) = self.udp_dialog.show(ctx, &theme) {
             self.start_udp_stream(udp_config);
+        }
+
+        // ── Legend actions ────────────────────────────────────────────────
+        for la in legend_actions {
+            self.handle_legend_action(la);
         }
 
         if let Some(a) = menu_action { self.handle_menu_action(a); }
@@ -271,6 +288,9 @@ pub enum PaneAction {
     OpenCsv,
     OpenUdpStream,
     RemoveSource(usize),
+    /// Rename a column: (source_id, original_name, new_display_name).
+    /// Empty new_display_name clears the alias.
+    RenameColumn(usize, String, String),
     /// Pause/resume a live UDP stream.
     ToggleStreamPause(usize),
     /// Stop and disconnect a live UDP stream.
@@ -278,6 +298,8 @@ pub enum PaneAction {
     AddPlot(crate::ui::add_plot_dialog::NewPlotConfig),
     RemovePlot(usize),
     AddFilter(crate::data::filter::Filter),
+    /// Rebind a plot to a different data source.
+    RebindPlot(usize, crate::data::source::SourceId),
     RemoveFilter(usize),
     ToggleFilter(usize),
     // Playback actions
@@ -324,6 +346,16 @@ impl DataVisualizerApp {
                 self.app_state.remove_source(id);
             }
 
+            PaneAction::RenameColumn(source_id, original, new_name) => {
+                if let Some(source) = self.app_state.sources.iter_mut().find(|s| s.id == source_id) {
+                    if new_name.is_empty() || new_name == original {
+                        source.column_aliases.remove(&original);
+                    } else {
+                        source.column_aliases.insert(original, new_name);
+                    }
+                }
+            }
+
             PaneAction::RemoveSource(id) => {
                 // Stop playback if this source is being played.
                 if self.app_state.playback.source_id == Some(id) {
@@ -334,8 +366,8 @@ impl DataVisualizerApp {
                 if self.app_state.is_streaming(id) {
                     self.app_state.stop_stream(id);
                 }
-                self.plot_area.remove_plots_for_source(id);
-                self.app_state.plots.retain(|p| p.source_id() != id);
+                // Keep plots alive — don't remove them. They'll show "Source removed"
+                // with a rebind UI. Just remove the data source.
                 self.app_state.remove_source(id);
             }
 
@@ -362,6 +394,35 @@ impl DataVisualizerApp {
             PaneAction::RemovePlot(id) => {
                 self.plot_area.remove_plot(id);
                 self.app_state.plots.retain(|p| p.id() != id);
+            }
+
+            PaneAction::RebindPlot(plot_id, new_source_id) => {
+                // Get old source_id before updating
+                let old_source_id = self.app_state.plots.iter().find(|p| p.id() == plot_id)
+                    .map(|p| p.source_id());
+
+                // Update the plot config's source_id
+                if let Some(p) = self.app_state.plots.iter_mut().find(|p| p.id() == plot_id) {
+                    match p {
+                        PlotConfig::Map(c) => c.source_id = new_source_id,
+                        PlotConfig::Scatter(c) => c.source_id = new_source_id,
+                        PlotConfig::ScrollChart(c) => c.source_id = new_source_id,
+                    }
+                }
+
+                // Migrate filters scoped to the old source to the new source
+                if let Some(old_id) = old_source_id {
+                    for filter in &mut self.app_state.filters {
+                        if filter.source_id == Some(old_id) {
+                            filter.source_id = Some(new_source_id);
+                        }
+                    }
+                }
+
+                // Update live plot manager config
+                self.plot_area.rebind_plot_source(plot_id, new_source_id);
+                // Re-sync
+                self.plot_area.sync_plot(plot_id, &self.app_state);
             }
 
             PaneAction::AddFilter(mut filter) => {
@@ -458,7 +519,6 @@ impl DataVisualizerApp {
                 self.app_state.selection = sel;
             }
             PlotAction::FilterToSelection(sel) => {
-                use crate::data::filter::{Filter, FilterOp};
                 let values: Vec<String> = {
                     let mut v: Vec<usize> = sel.indices.iter().copied().collect();
                     v.sort_unstable();
@@ -477,8 +537,195 @@ impl DataVisualizerApp {
                 self.app_state.selection = None;
                 self.plot_area.sync_all_filters(&self.app_state);
             }
+            PlotAction::LegendAction(la) => {
+                self.handle_legend_action(la);
+            }
+            PlotAction::RebindSource { plot_id, new_source_id } => {
+                use crate::plot::plot_config::PlotConfig;
+                // Get old source_id before updating
+                let old_source_id = self.app_state.plots.iter().find(|p| p.id() == plot_id)
+                    .map(|p| p.source_id());
+
+                if let Some(p) = self.app_state.plots.iter_mut().find(|p| p.id() == plot_id) {
+                    match p {
+                        PlotConfig::Map(c) => c.source_id = new_source_id,
+                        PlotConfig::Scatter(c) => c.source_id = new_source_id,
+                        PlotConfig::ScrollChart(c) => c.source_id = new_source_id,
+                    }
+                }
+
+                // Migrate filters scoped to the old source to the new source
+                if let Some(old_id) = old_source_id {
+                    for filter in &mut self.app_state.filters {
+                        if filter.source_id == Some(old_id) {
+                            filter.source_id = Some(new_source_id);
+                        }
+                    }
+                }
+
+                self.plot_area.rebind_plot_source(plot_id, new_source_id);
+                self.plot_area.sync_plot(plot_id, &self.app_state);
+            }
         }
     }
+
+    fn handle_legend_action(&mut self, action: LegendAction) {
+        match action {
+            LegendAction::SelectCategory { source_id, plot_id, col, value, additive } => {
+                // Find all row indices where col == value
+                if let Some(source) = self.app_state.sources.iter().find(|s| s.id == source_id) {
+                    let indices = find_rows_matching(&source.df, &col, &value);
+                    if additive {
+                        if let Some(sel) = &mut self.app_state.selection {
+                            for idx in indices {
+                                sel.indices.insert(idx);
+                            }
+                        } else {
+                            self.app_state.selection = Some(
+                                crate::state::selection::SelectionSet::from_indices(plot_id, source_id, indices),
+                            );
+                        }
+                    } else {
+                        self.app_state.selection = Some(
+                            crate::state::selection::SelectionSet::from_indices(plot_id, source_id, indices),
+                        );
+                    }
+                }
+            }
+            LegendAction::FilterToValue { source_id, col, value } => {
+                let mut filter = Filter {
+                    id: 0,
+                    source_id: Some(source_id),
+                    column: col,
+                    op: FilterOp::Eq,
+                    value,
+                    enabled: true,
+                };
+                filter.id = self.app_state.alloc_filter_id();
+                self.app_state.filters.push(filter);
+                self.plot_area.sync_all_filters(&self.app_state);
+            }
+            LegendAction::SelectAllSharing { source_id, plot_id, anchor_col, anchor_value, target_col } => {
+                // Find all rows where anchor_col == anchor_value, get their target_col values,
+                // then select all rows that share any of those target_col values.
+                if let Some(source) = self.app_state.sources.iter().find(|s| s.id == source_id) {
+                    // Step 1: get target values from anchor matches
+                    let anchor_rows = find_rows_matching(&source.df, &anchor_col, &anchor_value);
+                    let target_values = get_values_at_rows(&source.df, &target_col, &anchor_rows);
+
+                    // Step 2: find all rows matching any target value
+                    let mut all_indices = std::collections::HashSet::new();
+                    for tv in &target_values {
+                        for idx in find_rows_matching(&source.df, &target_col, tv) {
+                            all_indices.insert(idx);
+                        }
+                    }
+
+                    self.app_state.selection = Some(
+                        crate::state::selection::SelectionSet::from_indices(plot_id, source_id, all_indices),
+                    );
+                }
+            }
+
+            LegendAction::FilterToRowValue { source_id, col, row_index } => {
+                if let Some(source) = self.app_state.sources.iter().find(|s| s.id == source_id) {
+                    if let Some(value) = get_value_at_row(&source.df, &col, row_index) {
+                        let mut filter = Filter {
+                            id: 0,
+                            source_id: Some(source_id),
+                            column: col,
+                            op: FilterOp::Eq,
+                            value,
+                            enabled: true,
+                        };
+                        filter.id = self.app_state.alloc_filter_id();
+                        self.app_state.filters.push(filter);
+                        self.plot_area.sync_all_filters(&self.app_state);
+                    }
+                }
+            }
+
+            LegendAction::SelectAllSharingRow { source_id, plot_id, row_index, target_col } => {
+                if let Some(source) = self.app_state.sources.iter().find(|s| s.id == source_id) {
+                    if let Some(value) = get_value_at_row(&source.df, &target_col, row_index) {
+                        let indices = find_rows_matching(&source.df, &target_col, &value);
+                        self.app_state.selection = Some(
+                            crate::state::selection::SelectionSet::from_indices(plot_id, source_id, indices),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Get the string value of a column at a specific row index.
+fn get_value_at_row(df: &polars::prelude::DataFrame, col_name: &str, row: usize) -> Option<String> {
+    use polars::prelude::*;
+    let col = df.column(col_name).ok()?;
+    let series = col.as_series()?.clone();
+    let cast = series.cast(&DataType::String).unwrap_or(series);
+    let ca = cast.str().ok()?;
+    if row < ca.len() {
+        ca.get(row).map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Find all row indices where `col == value` (string comparison).
+fn find_rows_matching(df: &polars::prelude::DataFrame, col_name: &str, value: &str) -> Vec<usize> {
+    use polars::prelude::*;
+    let col = match df.column(col_name) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let series = match col.as_series() {
+        Some(s) => s.clone(),
+        None => return Vec::new(),
+    };
+    let cast = series.cast(&DataType::String).unwrap_or(series);
+    let ca = match cast.str() {
+        Ok(c) => c.clone(),
+        Err(_) => return Vec::new(),
+    };
+    ca.into_iter()
+        .enumerate()
+        .filter_map(|(i, opt)| {
+            if opt == Some(value) { Some(i) } else { None }
+        })
+        .collect()
+}
+
+/// Get distinct string values of `col` at the given row indices.
+fn get_values_at_rows(df: &polars::prelude::DataFrame, col_name: &str, rows: &[usize]) -> Vec<String> {
+    use polars::prelude::*;
+    let col = match df.column(col_name) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let series = match col.as_series() {
+        Some(s) => s.clone(),
+        None => return Vec::new(),
+    };
+    let cast = series.cast(&DataType::String).unwrap_or(series);
+    let ca = match cast.str() {
+        Ok(c) => c.clone(),
+        Err(_) => return Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for &i in rows {
+        if i < ca.len() {
+            if let Some(v) = ca.get(i) {
+                let s = v.to_string();
+                if seen.insert(s.clone()) {
+                    result.push(s);
+                }
+            }
+        }
+    }
+    result
 }
 
 // ── Playback helpers ─────────────────────────────────────────────────────────

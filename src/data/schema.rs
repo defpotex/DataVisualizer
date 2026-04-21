@@ -103,6 +103,11 @@ impl DataSchema {
     pub fn first_of_kind(&self, kind: &FieldKind) -> Option<&FieldMeta> {
         self.fields.iter().find(|f| &f.kind == kind)
     }
+
+    /// Get display name for a column using provided alias map.
+    pub fn display_name<'a>(&'a self, col: &'a str, aliases: &'a std::collections::HashMap<String, String>) -> &'a str {
+        aliases.get(col).map(|s| s.as_str()).unwrap_or(col)
+    }
 }
 
 /// Heuristic: map a column name + polars dtype to a FieldKind.

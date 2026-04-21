@@ -137,3 +137,4 @@ Vehicle Track/Telemetry Visualization Application
 - Tooltip - autosize to fit content
 - Some categorical selections not visible/available in selection lists
 - Alignment of color swatches in color dropdown
+- UDP should indicate waiting for source if you start listening with no data present

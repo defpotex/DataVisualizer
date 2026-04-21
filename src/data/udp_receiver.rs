@@ -161,24 +161,30 @@ fn receiver_loop(
                 continue;
             }
 
+            // Check for explicit header marker from udp_streamer: "#HEADER:col1,col2,..."
+            if let Some(hdr_str) = line.strip_prefix("#HEADER:") {
+                let new_header: Vec<String> = hdr_str.split(',').map(|s| s.trim().to_string()).collect();
+                if header.is_none() || header.as_ref().map(|h| h.len()) != Some(new_header.len()) {
+                    // First header or schema change — reset accumulated rows.
+                    rows.clear();
+                    dirty = true;
+                }
+                header = Some(new_header);
+                continue;
+            }
+
             let fields: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
 
             if header.is_none() {
-                // First non-empty packet is treated as the header if it looks
-                // like column names (contains at least one non-numeric field).
-                let looks_like_header = fields.iter().any(|f| f.parse::<f64>().is_err());
-                if looks_like_header {
-                    header = Some(fields);
-                    continue;
-                } else {
-                    // No header sent — generate generic column names.
-                    header = Some(
-                        (0..fields.len())
-                            .map(|i| format!("col_{}", i))
-                            .collect(),
-                    );
-                    // Fall through to add this as a data row.
-                }
+                // No explicit header received yet — generate generic column names.
+                // We don't try to auto-detect headers by content because datasets
+                // with text columns (e.g. callsign) make every row look like a header.
+                header = Some(
+                    (0..fields.len())
+                        .map(|i| format!("col_{}", i))
+                        .collect(),
+                );
+                // Fall through to add this as a data row.
             }
 
             // Pad or truncate to match header width.
@@ -249,6 +255,7 @@ fn flush_to_ui(
         path: None,
         schema,
         df,
+        column_aliases: std::collections::HashMap::new(),
     };
 
     // Use StreamUpdate event — UI will replace the existing source with same ID.

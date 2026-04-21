@@ -1,13 +1,13 @@
 use crate::data::schema::DataSchema;
 use crate::data::source::{DataSource, SourceId};
-use crate::plot::plot_config::{PlotConfig, ScrollChartConfig, Threshold};
+use crate::plot::plot_config::{AlphaConfig, ColorMode, Colormap, PlotConfig, ScrollChartConfig, Threshold};
 use crate::plot::styling::CATEGORICAL_PALETTE;
 use crate::plot::sync::{CancelToken, ScrollChartSyncResult};
 use crate::state::app_state::DataEvent;
 use crate::theme::AppTheme;
 use crossbeam_channel::Sender;
 use egui::{Color32, Context, Pos2, Rect, RichText, vec2};
-use egui_plot::{HLine, Line, Plot, PlotPoints};
+use egui_plot::{HLine, Line, Plot, PlotPoints, VLine};
 use polars::prelude::{DataFrame, DataType};
 
 // ── ScrollChart ──────────────────────────────────────────────────────────────
@@ -141,10 +141,11 @@ impl ScrollChart {
         let mut event = PlotWindowEvent::Open;
         let mut open = true;
 
-        let default_size = vec2(
-            (central_rect.width() * 0.48).max(300.0),
-            250.0,
-        );
+        let default_size = if self.config.vertical {
+            vec2(300.0, (central_rect.height() * 0.7).max(350.0))
+        } else {
+            vec2((central_rect.width() * 0.48).max(300.0), 250.0)
+        };
 
         let mut win = egui::Window::new(&self.config.title)
             .id(self.window_id())
@@ -239,7 +240,7 @@ impl ScrollChart {
             let time_max = self.times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let time_min_window = time_max - self.config.window_secs;
 
-            // Compute Y data range for clamping threshold polygons (avoids ±infinity feedback loop).
+            // Compute Y data range for clamping threshold polygons.
             let (y_data_min, y_data_max) = {
                 let mut lo = f64::INFINITY;
                 let mut hi = f64::NEG_INFINITY;
@@ -251,7 +252,6 @@ impl ScrollChart {
                         }
                     }
                 }
-                // Include threshold values in range so they're visible.
                 for th in &self.config.thresholds {
                     if th.value < lo { lo = th.value; }
                     if th.value > hi { hi = th.value; }
@@ -260,78 +260,135 @@ impl ScrollChart {
                 if margin == 0.0 { (lo - 1.0, hi + 1.0) } else { (lo - margin, hi + margin) }
             };
 
-            let plot = Plot::new(format!("scroll_chart_plot_{}", self.config.id))
-                .x_axis_label(&self.config.time_col)
+            let vertical = self.config.vertical;
+            let time_label = &self.config.time_col;
+            let has_fixed_value_range = self.config.y_range.is_some();
+
+            let mut plot = Plot::new(format!("scroll_chart_plot_{}", self.config.id))
                 .allow_drag(true)
                 .allow_zoom(true)
                 .allow_scroll(true)
                 .legend(egui_plot::Legend::default())
                 .show_axes([true, true])
-                .include_x(time_min_window)
-                .include_x(time_max);
+                // Disable auto_bounds — we force bounds each frame to keep scrolling.
+                .auto_bounds(egui::Vec2b::new(false, false));
+
+            if vertical {
+                plot = plot.y_axis_label(time_label);
+            } else {
+                plot = plot.x_axis_label(time_label);
+            }
+
+            let line_width = self.config.line_width;
+            let fixed_value_range = self.config.y_range;
 
             plot.show(ui, |plot_ui| {
-                // Draw threshold regions as colored horizontal bands
+                // Force the time axis to follow the latest data each frame.
+                // This is what makes the chart "scroll."
+                let current = plot_ui.plot_bounds();
+                if vertical {
+                    let (x_lo, x_hi) = if let Some((lo, hi)) = fixed_value_range {
+                        (lo, hi)
+                    } else {
+                        (current.min()[0], current.max()[0])
+                    };
+                    plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                        [x_lo, time_min_window],
+                        [x_hi, time_max],
+                    ));
+                } else {
+                    let (y_lo, y_hi) = if let Some((lo, hi)) = fixed_value_range {
+                        (lo, hi)
+                    } else {
+                        (current.min()[1], current.max()[1])
+                    };
+                    plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                        [time_min_window, y_lo],
+                        [time_max, y_hi],
+                    ));
+                }
+                // Draw threshold regions as colored horizontal/vertical bands
                 for threshold in &self.config.thresholds {
-                    // Above threshold — draw filled polygon
                     let above = Color32::from_rgba_unmultiplied(
-                        threshold.above_color[0],
-                        threshold.above_color[1],
-                        threshold.above_color[2],
-                        threshold.above_color[3],
+                        threshold.above_color[0], threshold.above_color[1],
+                        threshold.above_color[2], threshold.above_color[3],
                     );
                     let below = Color32::from_rgba_unmultiplied(
-                        threshold.below_color[0],
-                        threshold.below_color[1],
-                        threshold.below_color[2],
-                        threshold.below_color[3],
+                        threshold.below_color[0], threshold.below_color[1],
+                        threshold.below_color[2], threshold.below_color[3],
                     );
 
-                    // Above region: threshold → top of data range (clamped)
-                    let above_poly = egui_plot::Polygon::new(
-                        format!("above_{}", threshold.label),
-                        PlotPoints::new(vec![
-                            [time_min_window, threshold.value],
-                            [time_max, threshold.value],
-                            [time_max, y_data_max],
-                            [time_min_window, y_data_max],
-                        ]),
-                    )
-                    .fill_color(above)
-                    .stroke(egui::Stroke::NONE);
-                    plot_ui.polygon(above_poly);
+                    if vertical {
+                        // Vertical: threshold is on X axis (value axis)
+                        let above_poly = egui_plot::Polygon::new(
+                            format!("above_{}", threshold.label),
+                            PlotPoints::new(vec![
+                                [threshold.value, time_min_window],
+                                [y_data_max, time_min_window],
+                                [y_data_max, time_max],
+                                [threshold.value, time_max],
+                            ]),
+                        ).fill_color(above).stroke(egui::Stroke::NONE);
+                        plot_ui.polygon(above_poly);
 
-                    // Below region: bottom of data range → threshold (clamped)
-                    let below_poly = egui_plot::Polygon::new(
-                        format!("below_{}", threshold.label),
-                        PlotPoints::new(vec![
-                            [time_min_window, y_data_min],
-                            [time_max, y_data_min],
-                            [time_max, threshold.value],
-                            [time_min_window, threshold.value],
-                        ]),
-                    )
-                    .fill_color(below)
-                    .stroke(egui::Stroke::NONE);
-                    plot_ui.polygon(below_poly);
+                        let below_poly = egui_plot::Polygon::new(
+                            format!("below_{}", threshold.label),
+                            PlotPoints::new(vec![
+                                [y_data_min, time_min_window],
+                                [threshold.value, time_min_window],
+                                [threshold.value, time_max],
+                                [y_data_min, time_max],
+                            ]),
+                        ).fill_color(below).stroke(egui::Stroke::NONE);
+                        plot_ui.polygon(below_poly);
 
-                    // Threshold line
-                    let line_color = Color32::from_rgba_unmultiplied(
-                        threshold.above_color[0],
-                        threshold.above_color[1],
-                        threshold.above_color[2],
-                        180,
-                    );
-                    let label = if threshold.label.is_empty() {
-                        format!("Threshold: {:.1}", threshold.value)
+                        let label = if threshold.label.is_empty() {
+                            format!("Threshold: {:.1}", threshold.value)
+                        } else { threshold.label.clone() };
+                        let line_color = Color32::from_rgba_unmultiplied(
+                            threshold.above_color[0], threshold.above_color[1],
+                            threshold.above_color[2], 180,
+                        );
+                        plot_ui.vline(
+                            VLine::new(&label, threshold.value)
+                                .color(line_color).width(1.5),
+                        );
                     } else {
-                        threshold.label.clone()
-                    };
-                    plot_ui.hline(
-                        HLine::new(&label, threshold.value)
-                            .color(line_color)
-                            .width(1.5),
-                    );
+                        // Horizontal: threshold on Y axis
+                        let above_poly = egui_plot::Polygon::new(
+                            format!("above_{}", threshold.label),
+                            PlotPoints::new(vec![
+                                [time_min_window, threshold.value],
+                                [time_max, threshold.value],
+                                [time_max, y_data_max],
+                                [time_min_window, y_data_max],
+                            ]),
+                        ).fill_color(above).stroke(egui::Stroke::NONE);
+                        plot_ui.polygon(above_poly);
+
+                        let below_poly = egui_plot::Polygon::new(
+                            format!("below_{}", threshold.label),
+                            PlotPoints::new(vec![
+                                [time_min_window, y_data_min],
+                                [time_max, y_data_min],
+                                [time_max, threshold.value],
+                                [time_min_window, threshold.value],
+                            ]),
+                        ).fill_color(below).stroke(egui::Stroke::NONE);
+                        plot_ui.polygon(below_poly);
+
+                        let label = if threshold.label.is_empty() {
+                            format!("Threshold: {:.1}", threshold.value)
+                        } else { threshold.label.clone() };
+                        let line_color = Color32::from_rgba_unmultiplied(
+                            threshold.above_color[0], threshold.above_color[1],
+                            threshold.above_color[2], 180,
+                        );
+                        plot_ui.hline(
+                            HLine::new(&label, threshold.value)
+                                .color(line_color).width(1.5),
+                        );
+                    }
                 }
 
                 // Draw each Y series as a line
@@ -342,12 +399,14 @@ impl ScrollChart {
                         .iter()
                         .zip(values.iter())
                         .filter(|(t, _)| **t >= time_min_window)
-                        .map(|(&t, &v)| [t, v])
+                        .map(|(&t, &v)| {
+                            if vertical { [v, t] } else { [t, v] }
+                        })
                         .collect();
 
                     let line = Line::new(col_name.clone(), PlotPoints::new(points))
                         .color(color)
-                        .width(2.0);
+                        .width(line_width);
                     plot_ui.line(line);
                 }
             });
@@ -414,9 +473,25 @@ struct ScrollChartConfigDialog {
     draft_y_col_selected: Vec<bool>,
     draft_window_secs: f64,
     draft_thresholds: Vec<Threshold>,
+    draft_line_width: f32,
+    draft_vertical: bool,
+    draft_y_range_enabled: bool,
+    draft_y_range_min: f64,
+    draft_y_range_max: f64,
     field_names: Vec<String>,
+    all_field_names: Vec<String>,
     plot_id: usize,
     source_id: SourceId,
+    // Color
+    draft_color_variant: usize,
+    draft_color_col_idx: usize,
+    draft_colormap: Colormap,
+    draft_color_reverse: bool,
+    // Alpha
+    draft_alpha_enabled: bool,
+    draft_alpha_col_idx: usize,
+    draft_alpha_min: f32,
+    draft_alpha_max: f32,
 }
 
 impl Default for ScrollChartConfigDialog {
@@ -428,9 +503,23 @@ impl Default for ScrollChartConfigDialog {
             draft_y_col_selected: Vec::new(),
             draft_window_secs: 60.0,
             draft_thresholds: Vec::new(),
+            draft_line_width: 2.0,
+            draft_vertical: false,
+            draft_y_range_enabled: false,
+            draft_y_range_min: 0.0,
+            draft_y_range_max: 100.0,
             field_names: Vec::new(),
+            all_field_names: Vec::new(),
             plot_id: 0,
             source_id: 0,
+            draft_color_variant: 0,
+            draft_color_col_idx: 0,
+            draft_colormap: Colormap::Viridis,
+            draft_color_reverse: false,
+            draft_alpha_enabled: false,
+            draft_alpha_col_idx: 0,
+            draft_alpha_min: 0.2,
+            draft_alpha_max: 1.0,
         }
     }
 }
@@ -443,12 +532,29 @@ impl ScrollChartConfigDialog {
         self.source_id = config.source_id;
         self.draft_window_secs = config.window_secs;
         self.draft_thresholds = config.thresholds.clone();
+        self.draft_line_width = config.line_width;
+        self.draft_vertical = config.vertical;
+
+        if let Some((lo, hi)) = config.y_range {
+            self.draft_y_range_enabled = true;
+            self.draft_y_range_min = lo;
+            self.draft_y_range_max = hi;
+        } else {
+            self.draft_y_range_enabled = false;
+        }
 
         // Build numeric field list
         self.field_names = schema
             .fields
             .iter()
             .filter(|f| f.kind.is_numeric())
+            .map(|f| f.name.clone())
+            .collect();
+
+        // All fields (for color-by-category)
+        self.all_field_names = schema
+            .fields
+            .iter()
             .map(|f| f.name.clone())
             .collect();
 
@@ -464,6 +570,28 @@ impl ScrollChartConfigDialog {
             .iter()
             .map(|f| config.y_cols.contains(f))
             .collect();
+
+        // Color mode
+        self.draft_color_variant = config.color_mode.variant_idx();
+        let color_col = match &config.color_mode {
+            ColorMode::Categorical { col } | ColorMode::Continuous { col, .. } => col.as_str(),
+            ColorMode::Solid => "",
+        };
+        self.draft_color_col_idx = self.all_field_names.iter().position(|f| f == color_col).unwrap_or(0);
+        if let ColorMode::Continuous { colormap, reverse, .. } = &config.color_mode {
+            self.draft_colormap = colormap.clone();
+            self.draft_color_reverse = *reverse;
+        }
+
+        // Alpha
+        if let Some(al) = &config.alpha_config {
+            self.draft_alpha_enabled = true;
+            self.draft_alpha_col_idx = self.field_names.iter().position(|f| f == &al.col).unwrap_or(0);
+            self.draft_alpha_min = al.min_alpha;
+            self.draft_alpha_max = al.max_alpha;
+        } else {
+            self.draft_alpha_enabled = false;
+        }
     }
 
     fn show(&mut self, ctx: &Context, theme: &AppTheme) -> Option<ScrollChartConfig> {
@@ -475,41 +603,68 @@ impl ScrollChartConfigDialog {
         let s = &theme.spacing;
         let mut result: Option<ScrollChartConfig> = None;
 
-        egui::Window::new("Configure Scroll Chart")
-            .id(egui::Id::new(format!("scroll_cfg_{}", self.plot_id)))
-            .collapsible(false)
-            .resizable(false)
-            .default_width(360.0)
-            .show(ctx, |ui| {
-                // Title
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Title").color(c.text_primary).size(s.font_body));
-                    ui.text_edit_singleline(&mut self.draft_title);
-                });
-                ui.add_space(6.0);
+        let screen = ctx.screen_rect();
+        let default_pos = egui::pos2(
+            (screen.center().x - 200.0).max(screen.min.x),
+            (screen.center().y - 250.0).max(screen.min.y),
+        );
 
-                // Time column
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Time Column").color(c.text_primary).size(s.font_body));
-                    egui::ComboBox::from_id_salt(format!("scroll_time_{}", self.plot_id))
-                        .selected_text(
-                            self.field_names
-                                .get(self.draft_time_col_idx)
-                                .cloned()
-                                .unwrap_or_default(),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (i, name) in self.field_names.iter().enumerate() {
-                                ui.selectable_value(&mut self.draft_time_col_idx, i, name);
-                            }
-                        });
-                });
-                ui.add_space(6.0);
+        egui::Window::new(
+            RichText::new("Configure Scroll Chart")
+                .color(c.text_primary)
+                .size(s.font_body + 1.0)
+                .strong(),
+        )
+        .id(egui::Id::new(format!("scroll_cfg_{}", self.plot_id)))
+        .collapsible(false)
+        .resizable(true)
+        .default_pos(default_pos)
+        .default_width(400.0)
+        .order(egui::Order::Foreground)
+        .frame(egui::Frame {
+            fill: c.bg_panel,
+            stroke: egui::Stroke::new(1.0, c.border),
+            corner_radius: egui::CornerRadius::from(6.0_f32),
+            inner_margin: egui::Margin::from(16.0_f32),
+            ..Default::default()
+        })
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().max_height(560.0).show(ui, |ui| {
+                // ── Title ────────────────────────────────────────────
+                ui.label(RichText::new("Title").color(c.text_secondary).size(s.font_small));
+                ui.add_space(2.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.draft_title)
+                        .desired_width(ui.available_width())
+                        .text_color(c.text_primary)
+                        .font(egui::FontSelection::FontId(egui::FontId::proportional(s.font_body))),
+                );
+                ui.add_space(8.0);
 
-                // Y columns
-                ui.label(RichText::new("Y Columns").color(c.text_primary).size(s.font_body));
+                // ── Time column ──────────────────────────────────────
+                ui.label(RichText::new("Time Column").color(c.text_secondary).size(s.font_small));
+                ui.add_space(2.0);
+                egui::ComboBox::from_id_salt(format!("scroll_time_{}", self.plot_id))
+                    .selected_text(
+                        self.field_names
+                            .get(self.draft_time_col_idx)
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (i, name) in self.field_names.iter().enumerate() {
+                            ui.selectable_value(&mut self.draft_time_col_idx, i, name);
+                        }
+                    });
+                ui.add_space(8.0);
+
+                // ── Y columns ────────────────────────────────────────
+                ui.label(RichText::new("Y Columns").color(c.text_secondary).size(s.font_small));
+                ui.add_space(2.0);
                 egui::ScrollArea::vertical()
-                    .max_height(120.0)
+                    .id_salt("scroll_y_cols")
+                    .max_height(100.0)
                     .show(ui, |ui| {
                         for (i, name) in self.field_names.iter().enumerate() {
                             if i < self.draft_y_col_selected.len() {
@@ -520,27 +675,65 @@ impl ScrollChartConfigDialog {
                             }
                         }
                     });
-                ui.add_space(6.0);
+                ui.add_space(8.0);
 
-                // Window size
+                // ── Window & Orientation ──────────────────────────────
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Window").color(c.text_primary).size(s.font_body));
+                    ui.label(RichText::new("Window").color(c.text_secondary).size(s.font_small));
                     ui.add(
                         egui::DragValue::new(&mut self.draft_window_secs)
                             .range(1.0..=100_000.0)
                             .speed(1.0)
                             .suffix(" s"),
                     );
+                    ui.add_space(16.0);
+                    ui.checkbox(
+                        &mut self.draft_vertical,
+                        RichText::new("Vertical (time on Y)").color(c.text_secondary).size(s.font_small),
+                    );
                 });
-                ui.add_space(6.0);
+                ui.add_space(8.0);
 
-                // Thresholds
+                // ── Line width ──────────────────────────────────────
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Line Width").color(c.text_secondary).size(s.font_small));
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft_line_width)
+                            .range(0.5..=10.0)
+                            .speed(0.1)
+                            .suffix(" px"),
+                    );
+                });
+                ui.add_space(8.0);
+
+                // ── Fixed Y range ────────────────────────────────────
+                ui.checkbox(
+                    &mut self.draft_y_range_enabled,
+                    RichText::new("Fixed value axis range").color(c.text_secondary).size(s.font_small),
+                );
+                if self.draft_y_range_enabled {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Min").color(c.text_secondary).size(s.font_small));
+                        ui.add(egui::DragValue::new(&mut self.draft_y_range_min).speed(0.1));
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Max").color(c.text_secondary).size(s.font_small));
+                        ui.add(egui::DragValue::new(&mut self.draft_y_range_max).speed(0.1));
+                    });
+                    if self.draft_y_range_min >= self.draft_y_range_max {
+                        self.draft_y_range_max = self.draft_y_range_min + 1.0;
+                    }
+                }
+
+                ui.add_space(10.0);
                 ui.separator();
+                ui.add_space(8.0);
+
+                // ── Thresholds ───────────────────────────────────────
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("Thresholds")
-                            .color(c.text_primary)
-                            .size(s.font_body)
+                        RichText::new("THRESHOLDS")
+                            .color(c.text_secondary)
+                            .size(s.font_small)
                             .strong(),
                     );
                     if ui
@@ -556,85 +749,168 @@ impl ScrollChartConfigDialog {
 
                 let mut remove_idx: Option<usize> = None;
                 for (i, threshold) in self.draft_thresholds.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("#{}", i + 1))
-                                .color(c.text_secondary)
-                                .size(s.font_small),
-                        );
-                        ui.label(RichText::new("Value").color(c.text_secondary).size(s.font_small));
-                        ui.add(egui::DragValue::new(&mut threshold.value).speed(0.1));
-
-                        ui.label(RichText::new("Label").color(c.text_secondary).size(s.font_small));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut threshold.label)
-                                .desired_width(60.0),
-                        );
-
-                        if ui
-                            .add(egui::Button::new(
-                                RichText::new("✕").color(c.accent_warning).size(s.font_small),
-                            ).frame(false))
-                            .clicked()
-                        {
-                            remove_idx = Some(i);
-                        }
-                    });
+                    egui::Frame::default()
+                        .fill(c.bg_app)
+                        .stroke(egui::Stroke::new(1.0, c.border))
+                        .corner_radius(egui::CornerRadius::from(4.0_f32))
+                        .inner_margin(egui::Margin::from(6.0_f32))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("#{}", i + 1))
+                                        .color(c.text_secondary)
+                                        .size(s.font_small),
+                                );
+                                ui.label(RichText::new("Value").color(c.text_secondary).size(s.font_small));
+                                ui.add(egui::DragValue::new(&mut threshold.value).speed(0.1));
+                                ui.label(RichText::new("Label").color(c.text_secondary).size(s.font_small));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut threshold.label)
+                                        .desired_width(60.0),
+                                );
+                                if ui
+                                    .add(egui::Button::new(
+                                        RichText::new("✕").color(c.accent_warning).size(s.font_small),
+                                    ).frame(false))
+                                    .clicked()
+                                {
+                                    remove_idx = Some(i);
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Above").color(c.text_secondary).size(s.font_small));
+                                let mut above = Color32::from_rgba_unmultiplied(
+                                    threshold.above_color[0], threshold.above_color[1],
+                                    threshold.above_color[2], threshold.above_color[3],
+                                );
+                                if ui.color_edit_button_srgba(&mut above).changed() {
+                                    threshold.above_color = [above.r(), above.g(), above.b(), above.a()];
+                                }
+                                ui.add_space(8.0);
+                                ui.label(RichText::new("Below").color(c.text_secondary).size(s.font_small));
+                                let mut below = Color32::from_rgba_unmultiplied(
+                                    threshold.below_color[0], threshold.below_color[1],
+                                    threshold.below_color[2], threshold.below_color[3],
+                                );
+                                if ui.color_edit_button_srgba(&mut below).changed() {
+                                    threshold.below_color = [below.r(), below.g(), below.b(), below.a()];
+                                }
+                            });
+                        });
+                    ui.add_space(2.0);
                 }
                 if let Some(idx) = remove_idx {
                     self.draft_thresholds.remove(idx);
                 }
 
-                ui.add_space(8.0);
+            }); // end ScrollArea
 
-                // Buttons
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            {
+                // ── OK / Apply / Cancel ───────────────────────────────
+                let can_apply = !self.field_names.is_empty() && !self.draft_title.trim().is_empty();
+
+                let build_config = |s: &ScrollChartConfigDialog| -> ScrollChartConfig {
+                    let time_col = s.field_names
+                        .get(s.draft_time_col_idx)
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let y_cols: Vec<String> = s.field_names
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| {
+                            s.draft_y_col_selected
+                                .get(*i)
+                                .copied()
+                                .unwrap_or(false)
+                        })
+                        .map(|(_, name)| name.clone())
+                        .collect();
+
+                    let color_mode = match s.draft_color_variant {
+                        1 => ColorMode::Categorical {
+                            col: s.all_field_names.get(s.draft_color_col_idx)
+                                .cloned().unwrap_or_default(),
+                        },
+                        2 => ColorMode::Continuous {
+                            col: s.all_field_names.get(s.draft_color_col_idx)
+                                .cloned().unwrap_or_default(),
+                            colormap: s.draft_colormap.clone(),
+                            color_min: None,
+                            color_max: None,
+                            reverse: s.draft_color_reverse,
+                        },
+                        _ => ColorMode::Solid,
+                    };
+
+                    let alpha_config = if s.draft_alpha_enabled {
+                        Some(AlphaConfig {
+                            col: s.field_names.get(s.draft_alpha_col_idx)
+                                .cloned().unwrap_or_default(),
+                            min_alpha: s.draft_alpha_min,
+                            max_alpha: s.draft_alpha_max,
+                        })
+                    } else { None };
+
+                    let y_range = if s.draft_y_range_enabled {
+                        Some((s.draft_y_range_min, s.draft_y_range_max))
+                    } else { None };
+
+                    ScrollChartConfig {
+                        id: s.plot_id,
+                        title: s.draft_title.clone(),
+                        source_id: s.source_id,
+                        time_col,
+                        y_cols,
+                        window_secs: s.draft_window_secs,
+                        thresholds: s.draft_thresholds.clone(),
+                        color_mode,
+                        line_width: s.draft_line_width,
+                        alpha_config,
+                        vertical: s.draft_vertical,
+                        y_range,
+                    }
+                };
+
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(egui::Button::new(
-                            RichText::new("Apply").color(c.accent_primary).size(s.font_body),
-                        ))
-                        .clicked()
-                    {
-                        let time_col = self
-                            .field_names
-                            .get(self.draft_time_col_idx)
-                            .cloned()
-                            .unwrap_or_default();
-
-                        let y_cols: Vec<String> = self
-                            .field_names
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| {
-                                self.draft_y_col_selected
-                                    .get(*i)
-                                    .copied()
-                                    .unwrap_or(false)
-                            })
-                            .map(|(_, name)| name.clone())
-                            .collect();
-
-                        result = Some(ScrollChartConfig {
-                            id: self.plot_id,
-                            title: self.draft_title.clone(),
-                            source_id: self.source_id,
-                            time_col,
-                            y_cols,
-                            window_secs: self.draft_window_secs,
-                            thresholds: self.draft_thresholds.clone(),
-                        });
+                    let ok_btn = egui::Button::new(
+                        RichText::new("OK")
+                            .color(if can_apply { c.bg_app } else { c.text_secondary })
+                            .size(s.font_body)
+                            .strong(),
+                    )
+                    .fill(if can_apply { c.accent_primary } else { c.widget_bg })
+                    .min_size(egui::vec2(70.0, 0.0));
+                    if ui.add_enabled(can_apply, ok_btn).clicked() {
+                        result = Some(build_config(self));
                         self.is_open = false;
                     }
-                    if ui
-                        .add(egui::Button::new(
-                            RichText::new("Cancel").color(c.text_secondary).size(s.font_body),
-                        ))
-                        .clicked()
-                    {
+
+                    ui.add_space(4.0);
+
+                    let apply_btn = egui::Button::new(
+                        RichText::new("Apply")
+                            .color(if can_apply { c.text_primary } else { c.text_secondary })
+                            .size(s.font_body),
+                    )
+                    .min_size(egui::vec2(70.0, 0.0));
+                    if ui.add_enabled(can_apply, apply_btn).clicked() {
+                        result = Some(build_config(self));
+                    }
+
+                    ui.add_space(4.0);
+
+                    if ui.button(RichText::new("Cancel").color(c.text_secondary).size(s.font_body)).clicked() {
                         self.is_open = false;
                     }
                 });
-            });
+            }
+        });
 
         result
     }

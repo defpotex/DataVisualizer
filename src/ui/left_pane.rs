@@ -17,6 +17,8 @@ pub struct LeftPane {
     section_filters_open: bool,
     add_plot_dialog: AddPlotDialog,
     add_filter_dialog: AddFilterDialog,
+    /// Currently editing alias: (source_id, original_col_name, draft_alias_text).
+    editing_alias: Option<(usize, String, String)>,
 }
 
 impl Default for LeftPane {
@@ -29,6 +31,7 @@ impl Default for LeftPane {
             section_filters_open: true,
             add_plot_dialog: AddPlotDialog::default(),
             add_filter_dialog: AddFilterDialog::default(),
+            editing_alias: None,
         }
     }
 }
@@ -73,7 +76,7 @@ impl LeftPane {
                                 .find(|h| h.source_id == source.id)
                                 .map(|h| h.is_paused())
                                 .unwrap_or(false);
-                            source_card(ui, theme, source, &mut self.fields_expanded, &mut action, is_streaming, is_paused);
+                            source_card(ui, theme, source, &mut self.fields_expanded, &mut action, is_streaming, is_paused, &mut self.editing_alias);
                         }
                     }
                     for note in &state.notifications {
@@ -240,6 +243,7 @@ fn source_card(
     action: &mut Option<PaneAction>,
     is_streaming: bool,
     is_paused: bool,
+    editing_alias: &mut Option<(usize, String, String)>,
 ) {
     let c = &theme.colors;
     let s = &theme.spacing;
@@ -275,14 +279,61 @@ fn source_card(
             if is_expanded {
                 ui.add_space(2.0);
                 for field in &source.schema.fields {
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(field.kind.icon()).color(field_icon_color(&field.kind, theme)).size(s.font_small));
-                        ui.label(RichText::new(&field.name).color(c.text_data).size(s.font_small).monospace());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(field.kind.label()).color(c.text_secondary).size(s.font_small));
+                    let alias = source.column_aliases.get(&field.name);
+                    let is_editing = editing_alias.as_ref()
+                        .map(|(sid, col, _)| *sid == source.id && col == &field.name)
+                        .unwrap_or(false);
+
+                    if is_editing {
+                        // Inline edit mode — use an intermediate variable to avoid double borrow
+                        let mut commit = false;
+                        let mut cancel = false;
+                        let draft = &mut editing_alias.as_mut().unwrap().2;
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(field.kind.icon()).color(field_icon_color(&field.kind, theme)).size(s.font_small));
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(draft)
+                                    .desired_width(ui.available_width() - 50.0)
+                                    .font(egui::FontSelection::FontId(egui::FontId::monospace(s.font_small))),
+                            );
+                            if resp.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                commit = true;
+                            }
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                cancel = true;
+                            }
                         });
-                    });
+                        if commit {
+                            let new_name = editing_alias.as_ref().unwrap().2.trim().to_string();
+                            *action = Some(PaneAction::RenameColumn(source.id, field.name.clone(), new_name));
+                            *editing_alias = None;
+                        } else if cancel {
+                            *editing_alias = None;
+                        }
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(field.kind.icon()).color(field_icon_color(&field.kind, theme)).size(s.font_small));
+                            let display = alias.map(|a| a.as_str()).unwrap_or(&field.name);
+                            let label_resp = ui.add(
+                                egui::Label::new(
+                                    RichText::new(display).color(c.text_data).size(s.font_small).monospace()
+                                ).sense(egui::Sense::click()),
+                            );
+                            if alias.is_some() {
+                                ui.label(RichText::new(format!("({})", field.name)).color(c.text_secondary).size(s.font_small - 1.0));
+                            }
+                            // Double-click to edit alias
+                            if label_resp.double_clicked() {
+                                let current = alias.cloned().unwrap_or_else(|| field.name.clone());
+                                *editing_alias = Some((source.id, field.name.clone(), current));
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(field.kind.label()).color(c.text_secondary).size(s.font_small));
+                            });
+                        });
+                    }
                 }
                 ui.add_space(2.0);
             }
